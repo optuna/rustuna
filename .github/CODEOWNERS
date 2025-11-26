@@ -1,0 +1,11 @@
+# TODO(c-bata): Create a team to manage default owners.
+*                     @c-bata @y0z
+
+/rustuna_core/        @c-bata
+/rustuna_c/           @c-bata
+/rustuna_js/          @c-bata @porink0424
+/rustuna_pyo3/        @c-bata @y0z @Alnusjaponica @porink0424
+/rustuna_storages/    @c-bata
+/rustuna_importance/  @y0z
+/rustuna_samplers/    @y0z
+
