@@ -211,6 +211,7 @@ class PersistedTrial:
         system_attrs: dict[str, str] | None = None,
         datetime_start: datetime.datetime | None = None,
         datetime_complete: datetime.datetime | None = None,
+        intermediate_values: dict[int, float] | None = None,
         id: int | None = None,
     ) -> None: ...
     @property
@@ -239,6 +240,8 @@ class PersistedTrial:
     def datetime_start(self) -> datetime.datetime | None: ...
     @property
     def datetime_complete(self) -> datetime.datetime | None: ...
+    @property
+    def intermediate_values(self) -> dict[int, float]: ...
 
 # Study
 ObjectiveFuncType = Callable[[Trial], float | tuple[float, ...]]

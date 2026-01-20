@@ -309,6 +309,11 @@ impl PyObjectStorage {
                 .set_trial_param(src_trial.id, &name, &distribution, *internal_repr)?;
         }
 
+        if !src_trial.intermediate_values.is_empty() {
+            self.cache
+                .set_trial_intermediate_values(src_trial.id, src_trial.intermediate_values)?;
+        }
+
         if cache_trial.state_values != src_trial.state_values {
             self.cache
                 .set_trial_state_values(src_trial.id, src_trial.state_values.clone())?;

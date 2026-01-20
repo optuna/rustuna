@@ -14,8 +14,6 @@ use rustuna_core::study_cache::StudyCache;
 use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
 
-use crate::optuna::IntermediateValueEntry;
-
 use super::{JournalBackend, JournalLog, JournalOperation};
 
 pub struct JournalStorage {
@@ -858,21 +856,14 @@ impl JournalReplayState {
                 attrs.insert(AttrKey::System(k.clone().into()), value);
             }
         }
+        trial.attrs = attrs;
         if let Some(values) = log
             .fields
             .get("intermediate_values")
             .and_then(|v| v.as_object())
         {
-            let entries = intermediate_entries_from_map(values)?;
-            let json = serde_json::to_string(&entries).map_err(|_| {
-                Error::with_reason(
-                    ErrorKind::StorageError,
-                    "Failed to serialize intermediate values",
-                )
-            })?;
-            attrs.insert(AttrKey::System("intermediate_values".into()), json);
+            trial.intermediate_values = intermediate_values_from_map(values)?;
         }
-        trial.attrs = attrs;
 
         if let Some(dt) = log.fields.get("datetime_start").and_then(|v| v.as_str()) {
             trial.datetime_start = Some(dt.to_string());
@@ -1083,17 +1074,7 @@ impl JournalReplayState {
                 ),
             )
         })?;
-        let mut entries = intermediate_entries_from_attrs(trial)?;
-        upsert_intermediate_entry(&mut entries, step, value);
-        let json = serde_json::to_string(&entries).map_err(|_| {
-            Error::with_reason(
-                ErrorKind::StorageError,
-                "Failed to serialize intermediate values",
-            )
-        })?;
-        trial
-            .attrs
-            .insert(AttrKey::System("intermediate_values".into()), json);
+        trial.intermediate_values.insert(step, value);
         Ok(())
     }
 
@@ -1605,8 +1586,8 @@ fn json_map(entries: Vec<(&str, Value)>) -> Map<String, Value> {
     map
 }
 
-fn intermediate_entries_from_map(map: &Map<String, Value>) -> Result<Vec<IntermediateValueEntry>> {
-    let mut entries = Vec::new();
+fn intermediate_values_from_map(map: &Map<String, Value>) -> Result<HashMap<u32, f64>> {
+    let mut values = HashMap::with_capacity(map.len());
     for (k, v) in map {
         let step: u32 = k.parse().map_err(|_| {
             Error::with_reason(
@@ -1615,67 +1596,10 @@ fn intermediate_entries_from_map(map: &Map<String, Value>) -> Result<Vec<Interme
             )
         })?;
         let value = parse_f64_value(v)?;
-        entries.push(intermediate_entry(step, value));
+        values.insert(step, value);
     }
-    entries.sort_by_key(|e| e.step);
-    Ok(entries)
+    Ok(values)
 }
-
-fn intermediate_entries_from_attrs(trial: &PersistedTrial) -> Result<Vec<IntermediateValueEntry>> {
-    let raw = trial
-        .attrs
-        .get(&AttrKey::System("intermediate_values".into()))
-        .cloned();
-    match raw {
-        None => Ok(Vec::new()),
-        Some(json) => serde_json::from_str(&json).map_err(|_| {
-            Error::with_reason(
-                ErrorKind::StorageError,
-                "Failed to parse intermediate values JSON",
-            )
-        }),
-    }
-}
-
-fn upsert_intermediate_entry(entries: &mut Vec<IntermediateValueEntry>, step: u32, value: f64) {
-    if let Some(entry) = entries.iter_mut().find(|e| e.step == step) {
-        *entry = intermediate_entry(step, value);
-        return;
-    }
-    entries.push(intermediate_entry(step, value));
-    entries.sort_by_key(|e| e.step);
-}
-
-fn intermediate_entry(step: u32, value: f64) -> IntermediateValueEntry {
-    if value.is_nan() {
-        IntermediateValueEntry {
-            step,
-            value: None,
-            value_type: "NAN".to_string(),
-        }
-    } else if value.is_infinite() {
-        if value.is_sign_positive() {
-            IntermediateValueEntry {
-                step,
-                value: None,
-                value_type: "INF_POS".to_string(),
-            }
-        } else {
-            IntermediateValueEntry {
-                step,
-                value: None,
-                value_type: "INF_NEG".to_string(),
-            }
-        }
-    } else {
-        IntermediateValueEntry {
-            step,
-            value: Some(value),
-            value_type: "FINITE".to_string(),
-        }
-    }
-}
-
 fn unique_prefix() -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -62,8 +62,6 @@ def to_persisted_trial(
     study_id: int,
 ) -> rustuna.PersistedTrial:
     optuna_system_attrs = trial.system_attrs.copy()
-    if trial.intermediate_values:
-        optuna_system_attrs["intermediate_values"] = trial.intermediate_values
 
     internal_params: dict[str, float] = {}
     distributions: dict[str, rustuna.Distribution] = {}
@@ -84,6 +82,7 @@ def to_persisted_trial(
         distributions=distributions,
         user_attrs={k: json.dumps(v) for k, v in trial.user_attrs.items()},
         system_attrs={k: json.dumps(v) for k, v in optuna_system_attrs.items()},
+        intermediate_values=trial.intermediate_values,
         datetime_start=trial.datetime_start,
         datetime_complete=trial.datetime_complete,
     )
@@ -293,7 +292,7 @@ class FrozenTrialLike(FrozenTrial):
         system_attrs = {
             key: self._persisted_trial.system_attrs[key]
             for key in self._persisted_trial.system_attrs
-            if not key.startswith("category_labels:") and key != "intermediate_values"
+            if not key.startswith("category_labels:")
         }
         self.__system_attrs = _LazyJSONAttrs(system_attrs)
         return self.__system_attrs
@@ -306,35 +305,7 @@ class FrozenTrialLike(FrozenTrial):
     def intermediate_values(self) -> dict[int, float]:
         if self.__intermediate_values is not None:
             return self.__intermediate_values
-
-        intermediate_values_raw = self._persisted_trial.system_attrs.get(
-            "intermediate_values"
-        )
-        if intermediate_values_raw is None:
-            return {}
-        intermediate_values_raw = json.loads(intermediate_values_raw)
-        assert isinstance(intermediate_values_raw, list)
-
-        intermediate_values: dict[int, float] = {}
-        for v in intermediate_values_raw:
-            assert isinstance(v, dict)
-            step = v["step"]
-            assert isinstance(step, int)
-            value_type = v["value_type"]
-            assert isinstance(value_type, str)
-            if value_type == "FINITE":
-                value = v["value"]
-                assert isinstance(value, (int, float))
-                intermediate_values[step] = float(value)
-            elif value_type == "INF_POS":
-                intermediate_values[step] = float("inf")
-            elif value_type == "INF_NEG":
-                intermediate_values[step] = float("-inf")
-            elif value_type == "NAN":
-                intermediate_values[step] = float("nan")
-            else:
-                assert False, f"Unknown value_type: {value_type}"
-        return intermediate_values
+        return self._persisted_trial.intermediate_values
 
     @intermediate_values.setter
     def intermediate_values(self, values: dict[int, float]) -> None:
