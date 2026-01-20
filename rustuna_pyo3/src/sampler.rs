@@ -218,7 +218,6 @@ impl Sampler for PyObjectSampler {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = PyStorage {
                 storage: storage.clone(),
-                optuna_compatible: None,
                 kind: "unset",
             };
             let py_distribution = PyDistribution::new(distribution.clone(), name, &study_attrs);
@@ -272,7 +271,6 @@ impl Sampler for PyObjectSampler {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = PyStorage {
                 storage: storage.clone(),
-                optuna_compatible: None,
                 kind: "unset",
             };
             let py_search_space = PyDict::new(py);

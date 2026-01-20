@@ -407,6 +407,9 @@ class StorageProtocol(Protocol):
         state: TrialState,
         values: None | list[float] = None,
     ) -> None: ...
+    def set_trial_intermediate_value(
+        self, trial_id: int, step: int, intermediate_value: float
+    ) -> None: ...
     def get_studies(self) -> list[PersistedStudy]: ...
     def get_study(self, study_id: int) -> PersistedStudy: ...
     def get_trials(self, study_id: int) -> list[PersistedTrial]: ...
@@ -431,11 +434,6 @@ class StorageProtocol(Protocol):
         cardinality: int,
     ) -> list[CategoricalChoiceType]: ...
 
-class OptunaStorageProtocol(StorageProtocol, Protocol):
-    def set_trial_intermediate_value(
-        self, trial_id: int, step: int, intermediate_value: float
-    ) -> None: ...
-
 class Storage:
     """Storage for persisting optimization history."""
 
@@ -449,7 +447,7 @@ class Storage:
     @classmethod
     def sqlite3(
         cls, file_path: str, *, create_database: bool = False
-    ) -> OptunaStorageProtocol:
+    ) -> StorageProtocol:
         """Create a SQLite3 storage.
 
         Args:
@@ -463,7 +461,7 @@ class Storage:
     def journal_file(
         cls,
         file_path: str,
-    ) -> OptunaStorageProtocol:
+    ) -> StorageProtocol:
         """Create a Journal storage with its file backend.
 
         Args:

@@ -12,7 +12,6 @@ use rustuna_core::trial::TrialStateValues;
 use rustuna_storages::cache::CachedStorage;
 use rustuna_storages::journal::file::{JournalFileBackend, JournalFileSymlinkLock};
 use rustuna_storages::journal::storage::JournalStorage;
-use rustuna_storages::optuna::OptunaCompatibleStorage;
 use rustuna_storages::sqlite3::SQLite3Storage;
 
 use crate::attrs::{pyobj_to_system_attrs, pyobj_to_user_attrs};
@@ -26,7 +25,6 @@ use crate::trial::{PyPersistedTrial, PyTrialState};
 #[pyo3(module = "rustuna")]
 pub struct PyStorage {
     pub storage: Arc<RwLock<dyn Storage>>,
-    pub optuna_compatible: Option<Arc<RwLock<dyn OptunaCompatibleStorage>>>,
     pub kind: &'static str,
 }
 
@@ -36,7 +34,6 @@ impl PyStorage {
     fn in_memory(_cls: &Bound<'_, PyType>) -> PyResult<Self> {
         Ok(PyStorage {
             storage: Arc::new(RwLock::new(InMemoryStorage::new())),
-            optuna_compatible: None,
             kind: "in_memory",
         })
     }
@@ -55,8 +52,7 @@ impl PyStorage {
 
         let arc_storage = Arc::new(RwLock::new(CachedStorage::new(Box::new(backend))));
         Ok(PyStorage {
-            storage: arc_storage.clone(),
-            optuna_compatible: Some(arc_storage),
+            storage: arc_storage,
             kind: "sqlite3",
         })
     }
@@ -74,8 +70,7 @@ impl PyStorage {
         })?;
         let arc_storage = Arc::new(RwLock::new(storage));
         Ok(PyStorage {
-            storage: arc_storage.clone(),
-            optuna_compatible: Some(arc_storage),
+            storage: arc_storage,
             kind: "journal",
         })
     }
@@ -360,10 +355,8 @@ impl PyStorage {
         step: u32,
         intermediate_value: f64,
     ) -> PyResult<()> {
-        let optuna_storage = self.optuna_compatible.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("This storage does not support Optuna-compatible operations")
-        })?;
-        let mut guard = optuna_storage
+        let mut guard = self
+            .storage
             .write()
             .map_err(|_| PyRuntimeError::new_err("Failed to acquire the storage guard"))?;
         let mut intermediate_values = std::collections::HashMap::new();

@@ -1,15 +1,4 @@
-use std::collections::HashMap;
-
-use rustuna_core::Result;
 use serde::{Deserialize, Serialize};
-
-pub trait OptunaCompatibleStorage: Send + Sync {
-    fn set_trial_intermediate_values(
-        &mut self,
-        trial_id: u32,
-        intermediate_values: HashMap<u32, f64>,
-    ) -> Result<()>;
-}
 
 /// Intermediate value entry for JSON serialization.
 ///

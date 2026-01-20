@@ -15,7 +15,6 @@ use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
 
 use crate::optuna::IntermediateValueEntry;
-use crate::optuna::OptunaCompatibleStorage;
 
 use super::{JournalBackend, JournalLog, JournalOperation};
 
@@ -272,6 +271,37 @@ impl Storage for JournalStorage {
         Ok(())
     }
 
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> Result<()> {
+        if intermediate_values.is_empty() {
+            return Ok(());
+        }
+        self.sync_with_backend()?;
+        self.replay.ensure_trial_updatable(trial_id)?;
+        let worker_id = self.worker_id();
+        let mut logs = Vec::with_capacity(intermediate_values.len());
+        for (step, value) in intermediate_values {
+            let mut fields = Map::new();
+            fields.insert(
+                "trial_id".to_string(),
+                Value::Number(Number::from(trial_id)),
+            );
+            fields.insert("step".to_string(), Value::Number(Number::from(step)));
+            fields.insert("intermediate_value".to_string(), value_to_json(value));
+            logs.push(JournalLog {
+                op_code: JournalOperation::SetTrialIntermediateValue as i32,
+                worker_id: worker_id.clone(),
+                fields,
+            });
+        }
+        self.backend.append_logs(&logs)?;
+        self.sync_with_backend()?;
+        Ok(())
+    }
+
     fn get_studies(&mut self) -> Result<&Vec<PersistedStudy>> {
         self.sync_with_backend()?;
         self.replay.studies_sorted.clear();
@@ -486,39 +516,6 @@ impl Storage for JournalStorage {
         let cache = self.replay.study_caches.entry(study_id).or_default();
         cache.update(trials);
         Ok(cache.get_joint_search_space())
-    }
-}
-
-impl OptunaCompatibleStorage for JournalStorage {
-    fn set_trial_intermediate_values(
-        &mut self,
-        trial_id: u32,
-        intermediate_values: HashMap<u32, f64>,
-    ) -> Result<()> {
-        if intermediate_values.is_empty() {
-            return Ok(());
-        }
-        self.sync_with_backend()?;
-        self.replay.ensure_trial_updatable(trial_id)?;
-        let worker_id = self.worker_id();
-        let mut logs = Vec::with_capacity(intermediate_values.len());
-        for (step, value) in intermediate_values {
-            let mut fields = Map::new();
-            fields.insert(
-                "trial_id".to_string(),
-                Value::Number(Number::from(trial_id)),
-            );
-            fields.insert("step".to_string(), Value::Number(Number::from(step)));
-            fields.insert("intermediate_value".to_string(), value_to_json(value));
-            logs.push(JournalLog {
-                op_code: JournalOperation::SetTrialIntermediateValue as i32,
-                worker_id: worker_id.clone(),
-                fields,
-            });
-        }
-        self.backend.append_logs(&logs)?;
-        self.sync_with_backend()?;
-        Ok(())
     }
 }
 

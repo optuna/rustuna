@@ -125,6 +125,22 @@ impl PyObjectStorage {
         })
     }
 
+    fn obj_set_trial_intermediate_value(
+        &mut self,
+        trial_id: u32,
+        step: u32,
+        intermediate_value: f64,
+    ) -> PyResult<()> {
+        Python::attach(|py| {
+            self.obj.call_method1(
+                py,
+                "set_trial_intermediate_value",
+                (trial_id, step, intermediate_value),
+            )?;
+            Ok(())
+        })
+    }
+
     fn obj_set_study_attrs(&mut self, study_id: u32, attrs: Attrs) -> PyResult<()> {
         Python::attach(|py| {
             let py_system_attrs = pyo3::types::PyDict::new(py);
@@ -434,6 +450,44 @@ impl Storage for PyObjectStorage {
                     self.sync_all_trials()?;
                     self.cache
                         .set_trial_state_values(trial_id, state_values_clone)?;
+                    Ok(())
+                }
+                _ => Err(e),
+            },
+        }
+    }
+
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> rustuna_core::Result<()> {
+        if intermediate_values.is_empty() {
+            return Ok(());
+        }
+        let mut steps: Vec<u32> = intermediate_values.keys().copied().collect();
+        steps.sort_unstable();
+        for step in steps {
+            let value = intermediate_values
+                .get(&step)
+                .ok_or(rustuna_core::Error::new(
+                    rustuna_core::ErrorKind::StorageError,
+                ))?;
+            self.obj_set_trial_intermediate_value(trial_id, step, *value)
+                .map_err(|_| rustuna_core::Error::new(rustuna_core::ErrorKind::StorageError))?;
+        }
+
+        let retry_values = intermediate_values.clone();
+        match self
+            .cache
+            .set_trial_intermediate_values(trial_id, intermediate_values)
+        {
+            Ok(_) => Ok(()),
+            Err(e) => match e.kind {
+                rustuna_core::ErrorKind::StudyNotFound | rustuna_core::ErrorKind::TrialNotFound => {
+                    self.sync_all_trials()?;
+                    self.cache
+                        .set_trial_intermediate_values(trial_id, retry_values)?;
                     Ok(())
                 }
                 _ => Err(e),

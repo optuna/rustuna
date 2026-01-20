@@ -171,7 +171,7 @@ class ToRustunaStorage:
 
 
 class ToOptunaStorage(BaseStorage):
-    def __init__(self, storage: rustuna.OptunaStorageProtocol) -> None:
+    def __init__(self, storage: rustuna.StorageProtocol) -> None:
         self._storage = storage
 
     def create_new_study(

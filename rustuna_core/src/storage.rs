@@ -28,6 +28,14 @@ pub trait Storage: Send + Sync {
         state_values: TrialStateValues,
     ) -> Result<()>;
     // Design Note:
+    // Pruning (early-stopping) is not currently supported in Rustuna. This method is
+    // provided to maintain compatibility with Optuna storage APIs.
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> Result<()>;
+    // Design Note:
     // get_* methods take &mut self to allow in-place cache refresh in wrapper implementations
     // (e.g., CachedStorage). With &self it is impossible to safely update caches and return
     // references without relying on unsafe patterns.
@@ -255,6 +263,26 @@ impl Storage for InMemoryStorage {
             .ok_or(Error::new(ErrorKind::TrialNotFound))?;
         check_trial_is_updatable(trial)?;
         trial.state_values = state_values;
+        Ok(())
+    }
+
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> Result<()> {
+        if intermediate_values.is_empty() {
+            return Ok(());
+        }
+        let (study_id, trial_number) =
+            get_study_id_trial_number_by_trial_id(&self.trial_id_to_study_number, trial_id)?;
+        let trial = get_mut_trials_by_study_id(&mut self.trials, study_id)?
+            .get_mut(trial_number as usize)
+            .ok_or(Error::new(ErrorKind::TrialNotFound))?;
+        check_trial_is_updatable(trial)?;
+        for (step, value) in intermediate_values {
+            trial.intermediate_values.insert(step, value);
+        }
         Ok(())
     }
 

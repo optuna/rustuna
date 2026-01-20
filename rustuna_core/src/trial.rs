@@ -187,6 +187,7 @@ pub struct PersistedTrial {
     pub internal_params: HashMap<String, f64>,
     pub distributions: HashMap<String, Distribution>,
     pub attrs: Attrs,
+    pub intermediate_values: HashMap<u32, f64>,
     pub datetime_start: Option<String>,
     pub datetime_complete: Option<String>,
 }
@@ -200,6 +201,7 @@ impl PersistedTrial {
             internal_params: HashMap::new(),
             distributions: HashMap::new(),
             attrs: Attrs::new(),
+            intermediate_values: HashMap::new(),
             datetime_start: None,
             datetime_complete: None,
         }

@@ -1,5 +1,5 @@
-use crate::cache::{CachedStorageBackend, OptunaCachedStorageBackend};
-use crate::optuna::{IntermediateValueEntry, OptunaCompatibleStorage};
+use crate::cache::CachedStorageBackend;
+use crate::optuna::IntermediateValueEntry;
 use rusqlite::{params, Connection, Error as RusqliteError, OptionalExtension};
 use rustuna_core::attr::{AttrKey, Attrs, CategoryLabel};
 use rustuna_core::distribution::Distribution;
@@ -346,6 +346,83 @@ impl CachedStorageBackend for SQLite3Storage {
                     })?;
             }
         }
+
+        Ok(())
+    }
+
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> Result<()> {
+        if intermediate_values.is_empty() {
+            return Ok(());
+        }
+
+        let guard = self
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::StorageError))?;
+
+        // TODO(c-bata): Check if Optuna enables PRAGMA foreign_keys and if we can skip this check
+        // Explicitly check trial existence and state since the schema might be created by Optuna
+        let trial_state: Option<String> = guard
+            .query_row(
+                "SELECT state FROM trials WHERE trial_id = ?",
+                params![trial_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::StorageError,
+                    format!("Database query failed: {e}"),
+                )
+            })?;
+
+        let state = trial_state.ok_or_else(|| Error::new(ErrorKind::TrialNotFound))?;
+
+        if matches!(state.as_str(), "COMPLETE" | "FAIL" | "PRUNED") {
+            return Err(Error::new(ErrorKind::TrialAlreadyFinished));
+        }
+
+        let placeholders = intermediate_values
+            .iter()
+            .map(|_| "(?, ?, ?, ?)")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+        "INSERT INTO trial_intermediate_values (trial_id, step, intermediate_value, intermediate_value_type) VALUES {placeholders} \
+         ON CONFLICT(trial_id, step) DO UPDATE SET intermediate_value=excluded.intermediate_value, intermediate_value_type=excluded.intermediate_value_type"
+    );
+
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for (step, value) in &intermediate_values {
+            let (stored_value, value_type) = if value.is_nan() {
+                (None, "NAN")
+            } else if value.is_infinite() {
+                if value.is_sign_positive() {
+                    (None, "INF_POS")
+                } else {
+                    (None, "INF_NEG")
+                }
+            } else {
+                (Some(*value), "FINITE")
+            };
+
+            params.push(Box::new(trial_id));
+            params.push(Box::new(*step));
+            params.push(Box::new(stored_value));
+            params.push(Box::new(value_type.to_string()));
+        }
+
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        guard.execute(&sql, param_refs.as_slice()).map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Database query failed: {e}"),
+            )
+        })?;
 
         Ok(())
     }
@@ -1286,87 +1363,6 @@ impl CachedStorageBackend for SQLite3Storage {
         Ok(())
     }
 }
-
-impl OptunaCompatibleStorage for SQLite3Storage {
-    fn set_trial_intermediate_values(
-        &mut self,
-        trial_id: u32,
-        intermediate_values: HashMap<u32, f64>,
-    ) -> Result<()> {
-        if intermediate_values.is_empty() {
-            return Ok(());
-        }
-
-        let guard = self
-            .conn
-            .lock()
-            .map_err(|_| Error::new(ErrorKind::StorageError))?;
-
-        // TODO(c-bata): Check if Optuna enables PRAGMA foreign_keys and if we can skip this check
-        // Explicitly check trial existence and state since the schema might be created by Optuna
-        let trial_state: Option<String> = guard
-            .query_row(
-                "SELECT state FROM trials WHERE trial_id = ?",
-                params![trial_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::StorageError,
-                    format!("Database query failed: {e}"),
-                )
-            })?;
-
-        let state = trial_state.ok_or_else(|| Error::new(ErrorKind::TrialNotFound))?;
-
-        if matches!(state.as_str(), "COMPLETE" | "FAIL" | "PRUNED") {
-            return Err(Error::new(ErrorKind::TrialAlreadyFinished));
-        }
-
-        let placeholders = intermediate_values
-            .iter()
-            .map(|_| "(?, ?, ?, ?)")
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-        "INSERT INTO trial_intermediate_values (trial_id, step, intermediate_value, intermediate_value_type) VALUES {placeholders} \
-         ON CONFLICT(trial_id, step) DO UPDATE SET intermediate_value=excluded.intermediate_value, intermediate_value_type=excluded.intermediate_value_type"
-    );
-
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        for (step, value) in &intermediate_values {
-            let (stored_value, value_type) = if value.is_nan() {
-                (None, "NAN")
-            } else if value.is_infinite() {
-                if value.is_sign_positive() {
-                    (None, "INF_POS")
-                } else {
-                    (None, "INF_NEG")
-                }
-            } else {
-                (Some(*value), "FINITE")
-            };
-
-            params.push(Box::new(trial_id));
-            params.push(Box::new(*step));
-            params.push(Box::new(stored_value));
-            params.push(Box::new(value_type.to_string()));
-        }
-
-        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        guard.execute(&sql, param_refs.as_slice()).map_err(|e| {
-            Error::with_reason(
-                ErrorKind::StorageError,
-                format!("Database query failed: {e}"),
-            )
-        })?;
-
-        Ok(())
-    }
-}
-
-impl OptunaCachedStorageBackend for SQLite3Storage {}
 
 fn distribution_to_json(distribution: &Distribution, labels: Option<&[CategoryLabel]>) -> String {
     let (name, attributes) = match distribution {

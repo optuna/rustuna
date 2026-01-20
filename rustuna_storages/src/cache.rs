@@ -7,8 +7,6 @@ use rustuna_core::study_cache::StudyCache;
 use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
 
-use crate::optuna::OptunaCompatibleStorage;
-
 pub trait CachedStorageBackend: Send + Sync {
     // Design Note:
     // This trait is intended for backends that return owned values (not references) so that
@@ -49,6 +47,11 @@ pub trait CachedStorageBackend: Send + Sync {
         attrs: Attrs,
         error_on_overwrite: bool,
     ) -> Result<()>;
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> Result<()>;
 
     // Return trials that need refreshing: unfinished trials in `included_numbers`
     // and trials with trial_number greater than `trial_number_greater_than`.
@@ -59,8 +62,6 @@ pub trait CachedStorageBackend: Send + Sync {
         trial_number_greater_than: i32,
     ) -> Result<Vec<PersistedTrial>>;
 }
-
-pub trait OptunaCachedStorageBackend: CachedStorageBackend + OptunaCompatibleStorage {}
 
 pub struct CachedStorage {
     studies: Vec<PersistedStudy>,
@@ -74,11 +75,11 @@ pub struct CachedStorage {
     // Since category labels cannot be overwritten once set, this cache never needs invalidation.
     category_labels_cache: HashMap<(u32, String), Vec<CategoryLabel>>,
 
-    backend: Box<dyn OptunaCachedStorageBackend>,
+    backend: Box<dyn CachedStorageBackend>,
 }
 
 impl CachedStorage {
-    pub fn new(backend: Box<dyn OptunaCachedStorageBackend>) -> CachedStorage {
+    pub fn new(backend: Box<dyn CachedStorageBackend>) -> CachedStorage {
         CachedStorage {
             studies: Vec::new(),
             trials: HashMap::new(),
@@ -302,6 +303,19 @@ impl rustuna_core::storage::Storage for CachedStorage {
         Ok(())
     }
 
+    fn set_trial_intermediate_values(
+        &mut self,
+        trial_id: u32,
+        intermediate_values: HashMap<u32, f64>,
+    ) -> Result<()> {
+        if intermediate_values.is_empty() {
+            return Ok(());
+        }
+        self.backend
+            .set_trial_intermediate_values(trial_id, intermediate_values)?;
+        Ok(())
+    }
+
     fn get_studies(&mut self) -> Result<&Vec<PersistedStudy>> {
         let loaded = self.backend.get_studies()?;
         self.studies = loaded;
@@ -465,21 +479,6 @@ impl rustuna_core::storage::Storage for CachedStorage {
     }
 }
 
-impl OptunaCompatibleStorage for CachedStorage {
-    fn set_trial_intermediate_values(
-        &mut self,
-        trial_id: u32,
-        intermediate_values: HashMap<u32, f64>,
-    ) -> Result<()> {
-        if intermediate_values.is_empty() {
-            return Ok(());
-        }
-        self.backend
-            .set_trial_intermediate_values(trial_id, intermediate_values)?;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,6 +537,14 @@ mod tests {
             self.inner.set_trial_state_values(trial_id, state_values)
         }
 
+        fn set_trial_intermediate_values(
+            &mut self,
+            _trial_id: u32,
+            _intermediate_values: HashMap<u32, f64>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
         fn get_studies(&mut self) -> Result<Vec<PersistedStudy>> {
             Ok(self.inner.get_studies()?.clone())
         }
@@ -588,16 +595,6 @@ mod tests {
                 .set_trial_attrs(trial_id, attrs, error_on_overwrite)
         }
     }
-    impl OptunaCompatibleStorage for DummyBackend {
-        fn set_trial_intermediate_values(
-            &mut self,
-            _trial_id: u32,
-            _intermediate_values: HashMap<u32, f64>,
-        ) -> Result<()> {
-            todo!()
-        }
-    }
-    impl OptunaCachedStorageBackend for DummyBackend {}
 
     #[test]
     fn create_new_study_updates_cache() -> Result<()> {
