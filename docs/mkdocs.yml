@@ -2,12 +2,16 @@ site_name: Rustuna Documentation
 site_description: Fast hyperparameter optimization library written in Rust
 site_url: https://optuna.github.io/rustuna/
 
+extra_css:
+  - stylesheets/extra.css
+
 theme:
   name: material
+  logo: assets/optuna-white-square.png
   palette:
     - scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
   features:
     - navigation.sections
     - navigation.expand
