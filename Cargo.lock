@@ -578,6 +578,7 @@ version = "0.1.0"
 dependencies = [
  "rand",
  "rustuna_core",
+ "serde_json",
 ]
 
 [[package]]
