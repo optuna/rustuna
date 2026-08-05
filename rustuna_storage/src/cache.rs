@@ -66,13 +66,18 @@ pub trait CachedStorageBackend: Send + Sync {
         error_on_overwrite: bool,
     ) -> Result<()>;
 
+    fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()>;
+    fn may_omit_discard_trials(&self) -> bool;
+
     // Return trials that need refreshing: unfinished trials in `included_numbers`
     // and trials with trial_number greater than `trial_number_greater_than`.
+    // If `filter_discarded` is true, discarded trials are excluded when supported.
     fn get_trials_diff(
         &mut self,
         study_id: u32,
         included_numbers: &[u32],
         trial_number_greater_than: i32,
+        filter_discarded: bool,
     ) -> Result<Vec<PersistedTrial>>;
 }
 
@@ -92,12 +97,13 @@ pub struct CachedStorage {
     // Since category labels cannot be overwritten once set, this cache never needs invalidation.
     category_labels_cache: HashMap<(u32, String), Vec<CategoryLabel>>,
 
+    apply_discard: bool,
     backend: Box<dyn CachedStorageBackend>,
 }
 
 impl CachedStorage {
     /// Creates a caching wrapper around the given backend.
-    pub fn new(backend: Box<dyn CachedStorageBackend>) -> CachedStorage {
+    pub fn new(backend: Box<dyn CachedStorageBackend>, apply_discard: bool) -> CachedStorage {
         CachedStorage {
             studies: Vec::new(),
             trials: HashMap::new(),
@@ -106,6 +112,7 @@ impl CachedStorage {
             unfinished_trials: HashMap::new(),
             last_finished_trial_number: HashMap::new(),
             category_labels_cache: HashMap::new(),
+            apply_discard,
             backend,
         }
     }
@@ -121,9 +128,12 @@ impl CachedStorage {
             .get(&study_id)
             .copied()
             .unwrap_or(-1);
-        let loaded = self
-            .backend
-            .get_trials_diff(study_id, &unfinished, last_finished)?;
+        let loaded = self.backend.get_trials_diff(
+            study_id,
+            &unfinished,
+            last_finished,
+            self.apply_discard,
+        )?;
 
         if loaded.is_empty() {
             return Ok(());
@@ -599,12 +609,37 @@ impl rustuna_core::storage::Storage for CachedStorage {
         Ok(cache.get_joint_search_space())
     }
 
-    fn discard_trials(&mut self, _trial_ids: &[u32]) -> Result<()> {
+    fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()> {
+        if !self.apply_discard {
+            return Ok(());
+        }
+
+        let mut locations = Vec::with_capacity(trial_ids.len());
+        for trial_id in trial_ids {
+            if locations.iter().any(|(id, _, _)| id == trial_id) {
+                continue;
+            }
+            let (study_id, trial_number) = self.resolve_trial_location(*trial_id)?;
+            locations.push((*trial_id, study_id, trial_number));
+        }
+
+        self.backend.discard_trials(trial_ids)?;
+
+        for (_, study_id, trial_number) in locations {
+            if let Some(trials) = self.trials.get_mut(&study_id) {
+                if let Some(trial) = trials.get_mut(trial_number as usize) {
+                    *trial = None;
+                }
+            }
+            self.study_caches.remove(&study_id);
+            self.unfinished_trials.insert(study_id, Vec::new());
+            self.last_finished_trial_number.insert(study_id, -1);
+        }
         Ok(())
     }
 
     fn may_omit_trials(&self) -> bool {
-        false
+        self.apply_discard && self.backend.may_omit_discard_trials()
     }
 }
 
@@ -617,12 +652,14 @@ mod tests {
 
     struct DummyBackend {
         inner: rustuna_core::storage::InMemoryStorage,
+        discarded_trial_ids: std::collections::HashSet<u32>,
     }
 
     impl DummyBackend {
         fn new() -> Self {
             DummyBackend {
                 inner: rustuna_core::storage::InMemoryStorage::new(),
+                discarded_trial_ids: std::collections::HashSet::new(),
             }
         }
     }
@@ -700,10 +737,14 @@ mod tests {
             study_id: u32,
             included_numbers: &[u32],
             trial_number_greater_than: i32,
+            filter_discarded: bool,
         ) -> Result<Vec<PersistedTrial>> {
             let all = self.inner.get_trials(study_id)?.clone();
             let mut trials = Vec::new();
             for t in all.into_iter().flatten() {
+                if filter_discarded && self.discarded_trial_ids.contains(&t.id) {
+                    continue;
+                }
                 if included_numbers.contains(&t.number)
                     || (t.number as i32) > trial_number_greater_than
                 {
@@ -740,10 +781,19 @@ mod tests {
             self.inner
                 .set_trial_attrs(trial_id, attrs, error_on_overwrite)
         }
+
+        fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()> {
+            self.discarded_trial_ids.extend(trial_ids.iter().copied());
+            Ok(())
+        }
+
+        fn may_omit_discard_trials(&self) -> bool {
+            true
+        }
     }
     #[test]
     fn create_new_study_updates_cache() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let (study_id, name, directions) = {
             let study = storage.create_new_study("example", vec![Direction::Minimize])?;
             (study.id, study.name.clone(), study.directions.clone())
@@ -757,7 +807,7 @@ mod tests {
 
     #[test]
     fn create_new_study_rejects_duplicate() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         storage.create_new_study("example", vec![Direction::Minimize])?;
         let res = storage.create_new_study("example", vec![Direction::Minimize]);
         match res {
@@ -769,7 +819,7 @@ mod tests {
 
     #[test]
     fn test_create_study_does_not_reuse_study_id() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
 
         let study1 = storage.create_new_study("study1", vec![Direction::Minimize])?;
         let study1_id = study1.id;
@@ -792,7 +842,7 @@ mod tests {
 
     #[test]
     fn get_study_and_get_studies_use_cache() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         storage.create_new_study("s1", vec![Direction::Minimize])?;
         storage.create_new_study("s2", vec![Direction::Maximize])?;
 
@@ -808,7 +858,7 @@ mod tests {
 
     #[test]
     fn create_new_trial_appends_cache() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let study = storage.create_new_study("s", vec![Direction::Minimize])?.id;
         let t0_num = storage.create_new_trial(study)?.number;
         let t1_num = storage.create_new_trial(study)?.number;
@@ -824,7 +874,7 @@ mod tests {
 
     #[test]
     fn get_trials_and_get_trial_return_cached_refs() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
         let t0_id = storage.create_new_trial(study_id)?.id;
         let t1_id = storage.create_new_trial(study_id)?.id;
@@ -840,7 +890,7 @@ mod tests {
 
     #[test]
     fn get_trials_loads_from_backend_when_empty() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
         storage.create_new_trial(study_id)?;
 
@@ -854,7 +904,7 @@ mod tests {
     fn get_studies_refreshes_from_backend_every_time() -> Result<()> {
         let mut backend = DummyBackend::new();
         let study = backend.create_new_study("s", vec![Direction::Minimize])?;
-        let mut storage = CachedStorage::new(Box::new(backend));
+        let mut storage = CachedStorage::new(Box::new(backend), false);
 
         let studies = storage.get_studies()?;
         assert_eq!(studies.len(), 1);
@@ -875,7 +925,7 @@ mod tests {
         let study_id = backend.create_new_study("s", vec![Direction::Minimize])?.id;
         backend.create_new_trial(study_id)?;
 
-        let mut storage = CachedStorage::new(Box::new(backend));
+        let mut storage = CachedStorage::new(Box::new(backend), false);
         let trials1 = storage.get_trials(study_id)?;
         assert_eq!(trials1.len(), 1);
 
@@ -891,7 +941,7 @@ mod tests {
         let study_id = backend.create_new_study("s", vec![Direction::Minimize])?.id;
         let trial_id = backend.create_new_trial(study_id)?.id;
 
-        let mut storage = CachedStorage::new(Box::new(backend));
+        let mut storage = CachedStorage::new(Box::new(backend), false);
         storage.set_trial_state_values(trial_id, TrialStateValues::Complete(vec![1.0]))?;
         let trial = storage.get_trial(trial_id)?;
         assert!(matches!(trial.state_values, TrialStateValues::Complete(_)));
@@ -904,7 +954,7 @@ mod tests {
         let study_id = backend.create_new_study("s", vec![Direction::Minimize])?.id;
         let trial_id = backend.create_new_trial(study_id)?.id;
 
-        let mut storage = CachedStorage::new(Box::new(backend));
+        let mut storage = CachedStorage::new(Box::new(backend), false);
         let mut values = HashMap::new();
         values.insert(0, 0.1);
         values.insert(2, 0.3);
@@ -922,7 +972,7 @@ mod tests {
 
     #[test]
     fn get_joint_search_space_uses_cache_update() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
 
         let dist = Distribution::new_float(0.0, 1.0, None, false);
@@ -937,7 +987,7 @@ mod tests {
 
     #[test]
     fn set_study_and_trial_attrs_update_cache() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
         let trial_id = storage.create_new_trial(study_id)?.id;
 
@@ -973,7 +1023,7 @@ mod tests {
         let study_id = backend.create_new_study("s", vec![Direction::Minimize])?.id;
         backend.create_new_trial(study_id)?;
 
-        let mut storage = CachedStorage::new(Box::new(backend));
+        let mut storage = CachedStorage::new(Box::new(backend), false);
         let dist = Distribution::new_float(0.0, 1.0, None, false);
         let trial_id = storage.get_trials(study_id)?[0].as_ref().unwrap().id;
         storage.set_trial_param(trial_id, "x", &dist, 0.5)?;
@@ -989,7 +1039,7 @@ mod tests {
 
     #[test]
     fn set_trial_param() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
 
         // Setup test across multiple studies and trials.
         let study_id = storage
@@ -1026,7 +1076,7 @@ mod tests {
 
     #[test]
     fn set_trial_param_rejects_incompatible_distribution_across_trials() -> Result<()> {
-        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()));
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
         let study_id = storage
             .create_new_study("test", vec![Direction::Minimize])?
             .id;
@@ -1042,6 +1092,49 @@ mod tests {
             .set_trial_param(trial1_id, "x", &int_dist, 1.0)
             .expect_err("Expected IncompatibleDistribution error");
         assert!(matches!(err.kind, ErrorKind::IncompatibleDistribution));
+        Ok(())
+    }
+
+    #[test]
+    fn discard_trials_invalidates_cache_and_backend() -> Result<()> {
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), true);
+        let study_id = storage
+            .create_new_study("study", vec![Direction::Minimize])?
+            .id;
+        let trial0_id = storage.create_new_trial(study_id)?.id;
+        let trial1_id = storage.create_new_trial(study_id)?.id;
+        storage.get_trials(study_id)?;
+
+        storage.discard_trials(&[trial0_id])?;
+
+        let trials = storage.get_trials(study_id)?;
+        assert!(trials[0].is_none());
+        assert_eq!(trials[1].as_ref().unwrap().id, trial1_id);
+        assert!(storage.may_omit_trials());
+        assert!(matches!(
+            storage.get_trial(trial0_id).unwrap_err().kind,
+            ErrorKind::TrialDiscarded
+        ));
+        let backend_trials = storage.backend.get_trials_diff(study_id, &[], -1, true)?;
+        assert_eq!(backend_trials.len(), 1);
+        assert_eq!(backend_trials[0].id, trial1_id);
+        Ok(())
+    }
+
+    #[test]
+    fn discard_trials_keeps_cache_when_apply_discard_is_false() -> Result<()> {
+        let mut storage = CachedStorage::new(Box::new(DummyBackend::new()), false);
+        let study_id = storage
+            .create_new_study("study", vec![Direction::Minimize])?
+            .id;
+        let trial_id = storage.create_new_trial(study_id)?.id;
+        storage.get_trials(study_id)?;
+
+        storage.discard_trials(&[trial_id])?;
+
+        let trials = storage.get_trials(study_id)?;
+        assert_eq!(trials[0].as_ref().unwrap().id, trial_id);
+        assert!(!storage.may_omit_trials());
         Ok(())
     }
 }

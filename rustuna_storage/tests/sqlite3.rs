@@ -90,7 +90,7 @@ study.optimize(objective, n_trials=10)
     let studies = storage.get_studies()?;
     assert_eq!(studies.len(), 1);
 
-    let trials = storage.get_trials_diff(studies[0].id, &[], -1)?;
+    let trials = storage.get_trials_diff(studies[0].id, &[], -1, false)?;
     let trial0 = trials
         .into_iter()
         .find(|trial| trial.number == 0)
@@ -139,9 +139,10 @@ study.optimize(objective, n_trials=10)
 "#;
     // Evaluate 10 trials
     run_optuna_script(&python, &db_path, script)?;
-    let mut storage = CachedStorage::new(Box::new(SQLite3Storage::new(
-        db_path.to_string_lossy().as_ref(),
-    )?));
+    let mut storage = CachedStorage::new(
+        Box::new(SQLite3Storage::new(db_path.to_string_lossy().as_ref())?),
+        false,
+    );
     let study_id = {
         let studies = storage.get_studies()?;
         assert_eq!(studies.len(), 1);
