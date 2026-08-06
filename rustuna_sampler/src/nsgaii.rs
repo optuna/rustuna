@@ -189,9 +189,9 @@ impl NSGAIISampler {
             .filter(|trial| population_numbers.contains(&trial.number))
             .map(|trial| {
                 let mut params = HashMap::new();
-                for name in search_space.keys() {
+                for name in sorted_parameter_names(search_space) {
                     let param_value = *trial.internal_params.get(name).unwrap();
-                    params.insert(name.clone(), param_value);
+                    params.insert(name.to_string(), param_value);
                 }
                 params
             })
@@ -211,7 +211,7 @@ impl NSGAIISampler {
         search_space: &HashMap<String, Distribution>,
     ) -> HashMap<String, f64> {
         let mut child = HashMap::new();
-        for name in search_space.keys() {
+        for name in sorted_parameter_names(search_space) {
             let param_value0 = *parent0.get(name).unwrap();
             let param_value1 = *parent1.get(name).unwrap();
             let param_value = if self.rng.gen_bool(self.swapping_prob) {
@@ -219,7 +219,7 @@ impl NSGAIISampler {
             } else {
                 param_value0
             };
-            child.insert(name.clone(), param_value);
+            child.insert(name.to_string(), param_value);
         }
         child
     }
@@ -347,10 +347,10 @@ impl Sampler for NSGAIISampler {
             .mutation_prob
             .unwrap_or(1.0 / 1.0_f64.max(child.len() as f64));
         let mut params = HashMap::new();
-        for name in search_space.keys() {
+        for name in sorted_parameter_names(search_space) {
             if !self.rng.gen_bool(mutation_prob) {
                 let param_value = *child.get(name).unwrap();
-                params.insert(name.clone(), param_value);
+                params.insert(name.to_string(), param_value);
             }
         }
         Ok(params)
@@ -364,6 +364,12 @@ impl Sampler for NSGAIISampler {
     ) -> Result<()> {
         Ok(())
     }
+}
+
+fn sorted_parameter_names(search_space: &HashMap<String, Distribution>) -> Vec<&str> {
+    let mut names = search_space.keys().map(String::as_str).collect::<Vec<_>>();
+    names.sort_unstable();
+    names
 }
 
 fn fast_non_dominated_sort(
