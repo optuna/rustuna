@@ -36,6 +36,8 @@
 mod hssp;
 mod hypervolume;
 mod nds;
+mod split;
 
 pub use hssp::hypervolume_subset_selection;
 pub use nds::fast_non_dominated_sort_partial;
+pub use split::split_trials_for_multi_objective;
