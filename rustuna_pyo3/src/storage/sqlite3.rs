@@ -28,8 +28,8 @@ impl PySQLite3Storage {
 #[pymethods]
 impl PySQLite3Storage {
     #[new]
-    #[pyo3(signature = (file_path, *, create_database = true))]
-    fn py_new(file_path: &str, create_database: bool) -> PyResult<Self> {
+    #[pyo3(signature = (file_path, *, create_database = true, apply_discard = false))]
+    fn py_new(file_path: &str, create_database: bool, apply_discard: bool) -> PyResult<Self> {
         let backend = SQLite3Storage::new(file_path).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to open the SQLite3 file: {e:?}"))
         })?;
@@ -38,7 +38,10 @@ impl PySQLite3Storage {
                 PyRuntimeError::new_err(format!("Failed to create the database: {e:?}"))
             })?;
         }
-        let arc_storage = Arc::new(RwLock::new(CachedStorage::new(Box::new(backend))));
+        let arc_storage = Arc::new(RwLock::new(CachedStorage::new(
+            Box::new(backend),
+            apply_discard,
+        )));
         let binding = StorageBinding::new(arc_storage);
         Ok(PySQLite3Storage { binding })
     }

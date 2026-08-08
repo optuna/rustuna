@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS trials (
 	state VARCHAR(8) NOT NULL,
 	datetime_start DATETIME,
 	datetime_complete DATETIME,
+	-- Rustuna-specific column; it is not part of Optuna's SQLite schema.
+	is_discarded BOOLEAN NOT NULL DEFAULT 0,
 	PRIMARY KEY (trial_id),
 	FOREIGN KEY(study_id) REFERENCES studies (study_id)
 );

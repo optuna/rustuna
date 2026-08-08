@@ -7,6 +7,7 @@ use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
 use serde_json::{json, Number, Value};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 /// SQLite-backed storage backend.
@@ -16,6 +17,7 @@ use std::sync::Mutex;
 /// `rustuna_core`.
 pub struct SQLite3Storage {
     conn: Mutex<Connection>,
+    has_is_discarded_column: AtomicBool,
 }
 
 const SCHEMA_SQL: &str = include_str!("sqlite3_schema.sql");
@@ -32,8 +34,10 @@ impl SQLite3Storage {
                 format!("Failed to open {file_path}: {e}"),
             )
         })?;
+        let has_is_discarded_column = Self::has_is_discarded_column(&conn)?;
         Ok(SQLite3Storage {
             conn: Mutex::new(conn),
+            has_is_discarded_column: AtomicBool::new(has_is_discarded_column),
         })
     }
 
@@ -86,6 +90,10 @@ impl SQLite3Storage {
             }
         }
 
+        let has_is_discarded_column = Self::has_is_discarded_column(&conn)?;
+        self.has_is_discarded_column
+            .store(has_is_discarded_column, Ordering::Release);
+
         Ok(())
     }
 
@@ -104,6 +112,35 @@ impl SQLite3Storage {
                 )
             })?;
         Ok(exists.is_some())
+    }
+
+    fn has_is_discarded_column(conn: &Connection) -> Result<bool> {
+        let mut stmt = conn.prepare("PRAGMA table_info(trials)").map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Failed to inspect trials schema: {e}"),
+            )
+        })?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::StorageError,
+                    format!("Failed to inspect trials schema: {e}"),
+                )
+            })?;
+        for column in columns {
+            if column.map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::StorageError,
+                    format!("Failed to inspect trials schema: {e}"),
+                )
+            })? == "is_discarded"
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     fn validate_study_id(&self, study_id: u32) -> Result<()> {
@@ -133,6 +170,61 @@ impl SQLite3Storage {
 }
 
 impl CachedStorageBackend for SQLite3Storage {
+    fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()> {
+        if !self.has_is_discarded_column.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::StorageError))?;
+        let tx = guard.transaction().map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Database query failed: {e}"),
+            )
+        })?;
+        for trial_id in trial_ids {
+            let exists: Option<u32> = tx
+                .query_row(
+                    "SELECT trial_id FROM trials WHERE trial_id = ?",
+                    params![trial_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::StorageError,
+                        format!("Database query failed: {e}"),
+                    )
+                })?;
+            if exists.is_none() {
+                return Err(Error::new(ErrorKind::TrialNotFound));
+            }
+            tx.execute(
+                "UPDATE trials SET is_discarded = 1 WHERE trial_id = ?",
+                params![trial_id],
+            )
+            .map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::StorageError,
+                    format!("Database query failed: {e}"),
+                )
+            })?;
+        }
+        tx.commit().map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Database query failed: {e}"),
+            )
+        })
+    }
+
+    fn may_omit_discard_trials(&self) -> bool {
+        self.has_is_discarded_column.load(Ordering::Acquire)
+    }
+
     fn create_new_study(
         &mut self,
         study_name: &str,
@@ -640,7 +732,7 @@ impl CachedStorageBackend for SQLite3Storage {
             .lock()
             .map_err(|_| Error::new(ErrorKind::StorageError))?;
 
-        // Query to trials table .
+        // Query to trials table.
         let trial_row: Option<TrialRow> = guard
             .query_row(
                 "SELECT study_id, number, state, datetime_start, datetime_complete FROM trials WHERE trial_id = ?",
@@ -1129,6 +1221,7 @@ impl CachedStorageBackend for SQLite3Storage {
         study_id: u32,
         included_numbers: &[u32],
         trial_number_greater_than: i32,
+        filter_discarded: bool,
     ) -> rustuna_core::Result<Vec<rustuna_core::trial::PersistedTrial>> {
         let guard = self
             .conn
@@ -1137,6 +1230,12 @@ impl CachedStorageBackend for SQLite3Storage {
 
         let select_columns =
             "SELECT trial_id, number, state, datetime_start, datetime_complete FROM trials";
+        let discard_condition =
+            if filter_discarded && self.has_is_discarded_column.load(Ordering::Acquire) {
+                " AND is_discarded = 0"
+            } else {
+                ""
+            };
         // Numbers above the threshold are already returned by the range query. Filtering them
         // out here avoids an unnecessary second scan in the usual case where the current trial
         // is the only unfinished trial.
@@ -1152,7 +1251,9 @@ impl CachedStorageBackend for SQLite3Storage {
         let (sql, params): (String, Vec<Box<dyn rusqlite::ToSql>>) = if included_numbers.is_empty()
         {
             (
-                format!("{select_columns} WHERE study_id = ? AND number > ? ORDER BY trial_id"),
+                format!(
+                    "{select_columns} WHERE study_id = ? AND number > ?{discard_condition} ORDER BY trial_id"
+                ),
                 vec![Box::new(study_id), Box::new(trial_number_greater_than)],
             )
         } else {
@@ -1173,9 +1274,9 @@ impl CachedStorageBackend for SQLite3Storage {
             );
             (
                 format!(
-                    "{select_columns} WHERE study_id = ? AND number > ? \
+                    "{select_columns} WHERE study_id = ? AND number > ?{discard_condition} \
                          UNION ALL \
-                         {select_columns} WHERE study_id = ? AND number IN ({placeholders}) \
+                         {select_columns} WHERE study_id = ? AND number IN ({placeholders}){discard_condition} \
                          ORDER BY trial_id"
                 ),
                 params,
@@ -1734,6 +1835,7 @@ mod tests {
     use super::*;
     use crate::cache::CachedStorage;
     use rustuna_core::sampler::RandomSampler;
+    use rustuna_core::storage::Storage;
     use rustuna_core::study::{create_study, Direction};
     use tempfile::tempdir;
 
@@ -1810,6 +1912,53 @@ mod tests {
     }
 
     #[test]
+    fn discard_trials_are_omitted_by_cached_storage() -> Result<()> {
+        let backend = init_storage()?;
+        assert!(backend.may_omit_discard_trials());
+        let mut storage = CachedStorage::new(Box::new(backend), true);
+        let study_id = storage
+            .create_new_study("example", vec![Direction::Minimize])?
+            .id;
+        let trial0_id = storage.create_new_trial(study_id)?.id;
+        let trial1_id = storage.create_new_trial(study_id)?.id;
+        storage.discard_trials(&[trial0_id])?;
+
+        let trials = storage.get_trials(study_id)?;
+        assert!(trials[0].is_none());
+        assert_eq!(trials[1].as_ref().unwrap().id, trial1_id);
+        assert!(storage.may_omit_trials());
+        assert!(matches!(
+            storage.get_trial(trial0_id).unwrap_err().kind,
+            ErrorKind::TrialDiscarded
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn sqlite_without_is_discarded_column_is_supported() -> Result<()> {
+        let dir = tempdir().map_err(|_| Error::new(ErrorKind::Unexpected))?;
+        let path = dir.path().join("optuna.sqlite3");
+        let conn = Connection::open(&path).map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Failed to open database: {e}"),
+            )
+        })?;
+        conn.execute_batch(
+            "CREATE TABLE version_info (version_info_id INTEGER PRIMARY KEY, schema_version INTEGER, library_version VARCHAR(256));
+             CREATE TABLE trials (trial_id INTEGER PRIMARY KEY, number INTEGER, study_id INTEGER, state VARCHAR(8) NOT NULL, datetime_start DATETIME, datetime_complete DATETIME);",
+        )
+        .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        drop(conn);
+
+        let storage = SQLite3Storage::new(path.to_string_lossy().as_ref())?;
+        assert!(!storage.may_omit_discard_trials());
+        storage.create_database()?;
+        assert!(!storage.may_omit_discard_trials());
+        Ok(())
+    }
+
+    #[test]
     fn create_new_study_rejects_duplicate_name() -> Result<()> {
         let mut storage = init_storage()?;
         storage.create_new_study("dup", vec![Direction::Minimize])?;
@@ -1833,7 +1982,7 @@ mod tests {
         let trial = storage.get_trial(trial_id)?;
         assert!(matches!(trial.state_values, TrialStateValues::Waiting));
 
-        let trials = storage.get_trials_diff(study_id, &[trial.number], -1)?;
+        let trials = storage.get_trials_diff(study_id, &[trial.number], -1, false)?;
         assert_eq!(trials.len(), 1);
         assert!(matches!(trials[0].state_values, TrialStateValues::Waiting));
 
@@ -2123,17 +2272,17 @@ mod tests {
         }
 
         // Get all trials with number > 2
-        let trials = storage.get_trials_diff(study_id, &[], 2)?;
+        let trials = storage.get_trials_diff(study_id, &[], 2, false)?;
         assert_eq!(trials.len(), 2);
         assert_eq!(trials[0].number, 3);
         assert_eq!(trials[1].number, 4);
 
         // Get specific trials by number
-        let trials = storage.get_trials_diff(study_id, &[0, 2], -1)?;
+        let trials = storage.get_trials_diff(study_id, &[0, 2], -1, false)?;
         assert_eq!(trials.len(), 5); // All trials + included ones
 
         // Get trials with number > 3 OR in [0, 1]
-        let trials = storage.get_trials_diff(study_id, &[0, 1], 3)?;
+        let trials = storage.get_trials_diff(study_id, &[0, 1], 3, false)?;
         assert_eq!(trials.len(), 3); // trials 0, 1, 4
         Ok(())
     }
@@ -2148,7 +2297,7 @@ mod tests {
         storage.create_new_trial(study_id)?;
 
         // trial_number_greater_than is much larger than existing trial numbers
-        let trials = storage.get_trials_diff(study_id, &[], 500000)?;
+        let trials = storage.get_trials_diff(study_id, &[], 500000, false)?;
         assert_eq!(trials.len(), 0);
 
         Ok(())
@@ -2167,7 +2316,7 @@ mod tests {
     //     // A large inclusion list used to raise errors in some implementations.
     //     // Check that it is not an issue. See https://github.com/optuna/optuna/issues/1457.
     //     let large_numbers: Vec<u32> = (0..500000).collect();
-    //     let trials = storage.get_trials_diff(study_id, &large_numbers, 500000)?;
+    //     let trials = storage.get_trials_diff(study_id, &large_numbers, 500000, false)?;
     //     assert_eq!(trials.len(), 1);
 
     //     Ok(())
@@ -2183,11 +2332,11 @@ mod tests {
         storage.create_new_trial(study_id)?;
 
         // trial_number_greater_than = -1 should return all trials
-        let trials = storage.get_trials_diff(study_id, &[], -1)?;
+        let trials = storage.get_trials_diff(study_id, &[], -1, false)?;
         assert_eq!(trials.len(), 1);
 
         // trial_number_greater_than much larger than existing trials
-        let trials = storage.get_trials_diff(study_id, &[], 500001)?;
+        let trials = storage.get_trials_diff(study_id, &[], 500001, false)?;
         assert_eq!(trials.len(), 0);
 
         Ok(())
@@ -2197,7 +2346,7 @@ mod tests {
     fn run_optimization() -> Result<()> {
         let storage = SQLite3Storage::new(":memory:")?;
         storage.create_database()?;
-        let storage = CachedStorage::new(Box::new(storage));
+        let storage = CachedStorage::new(Box::new(storage), false);
 
         let study = create_study(
             "simple-quadratic",

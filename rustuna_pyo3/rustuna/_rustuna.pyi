@@ -973,12 +973,14 @@ class SQLite3Storage:
     Args:
         file_path: Path to the SQLite3 database file.
         create_database: If True, initialize the database when it is missing.
+        apply_discard: If True, omit discarded trials from subsequent reads when supported by the database schema.
     """
     def __init__(
         self,
         file_path: str,
         *,
         create_database: bool = True,
+        apply_discard: bool = False,
     ) -> None: ...
     def create_new_study(
         self, study_name: str, directions: list[StudyDirection]
