@@ -12,6 +12,7 @@ use rustuna_core::study::{Direction, PersistedStudy};
 use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::{Error, ErrorKind};
 
+use crate::attrs::{AttrKind, pyobj_to_attrs_with_kind};
 use crate::distribution::PyDistribution;
 use crate::exception::err_to_exceptions;
 use crate::study::{pyobject_to_persisted_study, PyDirection};
@@ -805,5 +806,23 @@ impl PyToRustStorage {
             .map(|t| PyPersistedTrial::from_storage(storage.clone(), t))
             .collect();
         Ok(py_trials)
+    }
+
+    fn set_trial_system_attrs(
+        &self,
+        py: Python<'_>,
+        trial_id: u32,
+        attrs: Py<PyAny>,
+    ) -> PyResult<()> {
+        let mut guard = self.storage.write().map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
+        })?;
+
+        let attrs = attrs.bind(py);
+        let system_attrs = pyobj_to_attrs_with_kind(attrs, AttrKind::System)?;
+        guard
+            .set_trial_attrs(trial_id, system_attrs, false)
+            .map_err(err_to_exceptions)?;
+        Ok(())
     }
 }

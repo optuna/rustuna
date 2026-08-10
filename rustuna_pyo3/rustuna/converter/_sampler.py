@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from optuna.distributions import BaseDistribution
 from optuna.samplers import BaseSampler
@@ -49,10 +49,11 @@ class ToOptunaSampler(BaseSampler):
         ```
     """
 
-    def __init__(self, sampler: SamplerProtocol) -> None:
+    def __init__(self, sampler: SamplerProtocol, constraints_func: Callable[[FrozenTrial], Sequence[float]]) -> None:
         self._sampler = sampler
         self._inter_section_search_space = IntersectionSearchSpace()
         self._storage: ToRustStorage | None = None
+        self._constraints_func = constraints_func
 
     def _get_storage(self, storage: BaseStorage) -> StorageProtocol:
         if self._storage is None:
@@ -144,6 +145,7 @@ class ToOptunaSampler(BaseSampler):
         values: Sequence[float] | None,
     ) -> None:
         """Notify the Rustuna sampler that a trial has finished."""
+
         after_trial = getattr(self._sampler, "after_trial", None)
         if after_trial is None:
             return
@@ -155,6 +157,16 @@ class ToOptunaSampler(BaseSampler):
             directions=to_rustuna_directions(study._directions),
         )
         storage = self._get_storage(study._storage)
+
+        constraints = self._constraints_func(trial)
+        storage.set_trial_system_attrs(
+            trial._trial_id,
+            {
+                f"constraints:{i}": str(c)
+                for i, c in enumerate(constraints)
+            }
+        )
+
         after_trial(
             ctx,
             storage,
