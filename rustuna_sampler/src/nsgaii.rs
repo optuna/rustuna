@@ -396,7 +396,7 @@ fn constrained_dominates(
 
     let constraints0 = trial0.constraints()?;
     let satisfy_constraints0 = constraints0.values().all(|x| *x <= 0.0);
-    let constraints1 = trial0.constraints()?;
+    let constraints1 = trial1.constraints()?;
     let satisfy_constraints1 = constraints1.values().all(|x| *x <= 0.0);
 
     if satisfy_constraints0 && satisfy_constraints1 {
@@ -423,9 +423,9 @@ fn fast_non_dominated_sort(
 
     let population_trials = population_numbers
         .iter()
-        .map(|n| {
+        .map(|i| {
             trials
-                .get(*n as usize)
+                .get(*i as usize)
                 .and_then(|trial| trial.as_ref())
                 .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))
         })
