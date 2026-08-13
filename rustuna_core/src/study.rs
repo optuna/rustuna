@@ -563,35 +563,44 @@ pub fn get_pareto_front(study: &Study) -> Result<Vec<u32>> {
 
     // TODO(HideakiImamura): Use Vec::with_capacity() to reduce the number of memory allocations.
     let mut pareto_front_numbers = vec![];
-    trials.iter().for_each(|trial| {
+    trials.iter().try_for_each(|trial| {
         let mut dominated = false;
-        let trial_values = match trial.state_values {
-            TrialStateValues::Complete(ref v) => v,
-            _ => panic!("Unexpected state"),
+        let TrialStateValues::Complete(ref trial_values) = trial.state_values else {
+            return Ok(());
         };
         for other in trials.iter() {
-            let other_values = match other.state_values {
-                TrialStateValues::Complete(ref v) => v,
-                _ => panic!("Unexpected state"),
+            let TrialStateValues::Complete(ref other_values) = other.state_values else {
+                continue;
             };
-            if dominates(other_values, trial_values, &study.directions) {
+            if dominates(other_values, trial_values, &study.directions)? {
                 dominated = true;
                 break;
             }
         }
-
         if !dominated {
             pareto_front_numbers.push(trial.number);
         }
-    });
+        Ok(())
+    })?;
 
     Ok(pareto_front_numbers)
 }
 
 /// Returns whether `values0` dominates `values1` under the given directions.
-pub fn dominates(values0: &[f64], values1: &[f64], directions: &[Direction]) -> bool {
-    assert_eq!(values0.len(), values1.len());
-    assert_eq!(values0.len(), directions.len());
+/// Returns an error if `values0` or `values1` contains `f64::NAN`.
+pub fn dominates(values0: &[f64], values1: &[f64], directions: &[Direction]) -> Result<bool> {
+    if values0.len() != values1.len() || values0.len() != directions.len() {
+        return Err(Error::with_reason(
+            ErrorKind::Unexpected,
+            "The length of values0, values1 and directions are different.".to_string(),
+        ));
+    }
+    if values0.iter().any(|x| x.is_nan()) || values1.iter().any(|x| x.is_nan()) {
+        return Err(Error::with_reason(
+            ErrorKind::Unexpected,
+            "values0, values1 should not contain f64::NAN.".to_string(),
+        ));
+    }
 
     let mut equal = true;
     for ((v0, v1), d) in values0.iter().zip(values1).zip(directions) {
@@ -603,10 +612,10 @@ pub fn dominates(values0: &[f64], values1: &[f64], directions: &[Direction]) -> 
             Direction::Maximize => *v0 < *v1,
         };
         if v1_dominate_v0 {
-            return false; // Early return
+            return Ok(false); // Early return
         }
     }
-    !equal
+    Ok(!equal)
 }
 
 #[cfg(test)]
@@ -807,10 +816,12 @@ mod tests {
     #[test]
     fn test_dominates() {
         let directions = vec![Direction::Minimize, Direction::Maximize];
-        assert!(dominates(&[1.0, 2.0], &[2.0, 1.0], &directions));
-        assert!(!dominates(&[2.0, 1.0], &[1.0, 2.0], &directions));
-        assert!(!dominates(&[1.0, 2.0], &[1.0, 2.0], &directions));
-        assert!(!dominates(&[2.0, 1.0], &[2.0, 1.0], &directions));
+        assert!(dominates(&[1.0, 2.0], &[2.0, 1.0], &directions).unwrap());
+        assert!(!dominates(&[2.0, 1.0], &[1.0, 2.0], &directions).unwrap());
+        assert!(!dominates(&[1.0, 2.0], &[1.0, 2.0], &directions).unwrap());
+        assert!(!dominates(&[2.0, 1.0], &[2.0, 1.0], &directions).unwrap());
+        assert!(dominates(&[1.0], &[2.0, 1.0], &directions).is_err());
+        assert!(dominates(&[f64::NAN, 1.0], &[2.0, 1.0], &directions).is_err());
     }
 
     #[test]
