@@ -235,7 +235,7 @@ impl CmaEsSampler {
 
 impl Sampler for CmaEsSampler {
     fn sample_independent(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         name: &str,
@@ -257,7 +257,7 @@ impl Sampler for CmaEsSampler {
     }
 
     fn sample_joint(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
@@ -289,10 +289,10 @@ impl Sampler for CmaEsSampler {
 #[pyclass(name = "CmaEsSampler")]
 #[pyo3(module = "rustuna")]
 pub struct PyCmaEsSampler {
-    pub sampler: Arc<Mutex<dyn Sampler>>,
+    pub sampler: Arc<CmaEsSampler>,
 }
 
-// These methods release the GIL before acquiring the sampler mutex because
+// These methods release the GIL before acquiring the sampler's internal mutex because
 // `CmaEsSampler` re-attaches to Python internally. Acquiring the mutex while holding the GIL
 // could deadlock with another thread that holds the mutex and waits for the GIL.
 #[pymethods]
@@ -301,7 +301,7 @@ impl PyCmaEsSampler {
     #[pyo3(signature = (*, seed = None, popsize = None))]
     fn py_new(seed: Option<u64>, popsize: Option<usize>) -> Self {
         PyCmaEsSampler {
-            sampler: Arc::new(Mutex::new(CmaEsSampler::new(seed, popsize))),
+            sampler: Arc::new(CmaEsSampler::new(seed, popsize)),
         }
     }
 
@@ -324,10 +324,6 @@ impl PyCmaEsSampler {
         let distribution = distribution.distribution.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_independent(&context, arc_storage, &name, &distribution)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to sample independent: {e:?}"))
@@ -350,10 +346,6 @@ impl PyCmaEsSampler {
             .collect();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_joint(&context, arc_storage, &search_space)
                 .map_err(err_to_exceptions)
         })
@@ -381,10 +373,6 @@ impl PyCmaEsSampler {
         let context = ctx.context.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .after_trial(&context, arc_storage, &state_values)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to call after_trial: {e:?}")))
         })

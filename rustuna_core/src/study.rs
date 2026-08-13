@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crate::attr::{extract_fixed_params, fixed_params_to_attrs, AttrKey, Attrs, CategoryLabel};
 use crate::distribution::Distribution;
@@ -10,7 +10,7 @@ use crate::trial_queue::{InMemoryTrialQueue, TrialQueue};
 use crate::{Error, ErrorKind, Result};
 
 /// Creates a study backed by the given storage and sampler.
-pub fn create_study<S: Storage + Send + Sync + 'static, T: Sampler + Send + 'static>(
+pub fn create_study<S: Storage + Send + Sync + 'static, T: Sampler + 'static>(
     study_name: &str,
     mut storage: S,
     sampler: T,
@@ -18,7 +18,7 @@ pub fn create_study<S: Storage + Send + Sync + 'static, T: Sampler + Send + 'sta
 ) -> Result<Study> {
     let study_id = storage.create_new_study(study_name, directions.clone())?.id;
     let storage = Arc::new(RwLock::new(storage));
-    let sampler: Arc<Mutex<dyn Sampler>> = Arc::new(Mutex::new(sampler));
+    let sampler: Arc<dyn Sampler> = Arc::new(sampler);
     let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
     Ok(Study::new(
         study_id,
@@ -34,7 +34,7 @@ pub fn create_study<S: Storage + Send + Sync + 'static, T: Sampler + Send + 'sta
 pub fn create_study_with_arc(
     study_name: &str,
     storage: Arc<RwLock<dyn Storage>>,
-    sampler: Arc<Mutex<dyn Sampler>>,
+    sampler: Arc<dyn Sampler>,
     directions: Vec<Direction>,
 ) -> Result<Study> {
     let mut guard = storage.write().map_err(|e| {
@@ -69,7 +69,7 @@ pub struct Study {
     pub name: String,
     pub directions: Vec<Direction>,
     pub storage: Arc<RwLock<dyn Storage>>,
-    pub sampler: Arc<Mutex<dyn Sampler>>,
+    pub sampler: Arc<dyn Sampler>,
     pub queue: Arc<RwLock<dyn TrialQueue>>,
 }
 impl Study {
@@ -79,7 +79,7 @@ impl Study {
         name: String,
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
-        sampler: Arc<Mutex<dyn Sampler>>,
+        sampler: Arc<dyn Sampler>,
         queue: Arc<RwLock<dyn TrialQueue>>,
     ) -> Self {
         Study {
@@ -96,7 +96,7 @@ impl Study {
     pub fn from_id(
         id: u32,
         storage: Arc<RwLock<dyn Storage>>,
-        sampler: Arc<Mutex<dyn Sampler>>,
+        sampler: Arc<dyn Sampler>,
     ) -> Result<Self> {
         let mut guard = storage.write().map_err(|e| {
             Error::with_reason(
@@ -116,7 +116,7 @@ impl Study {
     pub fn from_name(
         name: String,
         storage: Arc<RwLock<dyn Storage>>,
-        sampler: Arc<Mutex<dyn Sampler>>,
+        sampler: Arc<dyn Sampler>,
     ) -> Result<Self> {
         let mut guard = storage.write().map_err(|e| {
             Error::with_reason(
@@ -221,46 +221,40 @@ impl Study {
                 )
             };
 
-        let sampler = Arc::clone(&self.sampler);
-        let mut guard = sampler.lock().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::Unexpected,
-                format!("Failed to acquire a sampler guard: {e}"),
-            )
-        })?;
-        let joint_params: HashMap<String, (Distribution, f64)> = if guard.support_joint_sampling() {
-            let joint_search_space = self
-                .storage
-                .write()
-                .map_err(|e| {
-                    Error::with_reason(
-                        ErrorKind::Unexpected,
-                        format!("Failed to acquire a storage guard: {e}"),
-                    )
-                })?
-                .get_joint_search_space(self.id)?;
+        let joint_params: HashMap<String, (Distribution, f64)> =
+            if self.sampler.support_joint_sampling() {
+                let joint_search_space = self
+                    .storage
+                    .write()
+                    .map_err(|e| {
+                        Error::with_reason(
+                            ErrorKind::Unexpected,
+                            format!("Failed to acquire a storage guard: {e}"),
+                        )
+                    })?
+                    .get_joint_search_space(self.id)?;
 
-            let ctx = SamplerContext {
-                study_id: self.id,
-                trial_number,
-                trial_id,
-                directions: self.directions.clone(),
-            };
-            let params = guard.sample_joint(&ctx, self.storage.clone(), &joint_search_space)?;
-            let mut joint_params = HashMap::new();
-            for (name, param_value) in params {
-                if !joint_search_space.contains_key(&name) {
-                    continue;
+                let ctx = SamplerContext {
+                    study_id: self.id,
+                    trial_number,
+                    trial_id,
+                    directions: self.directions.clone(),
+                };
+                let params =
+                    self.sampler
+                        .sample_joint(&ctx, self.storage.clone(), &joint_search_space)?;
+                let mut joint_params = HashMap::new();
+                for (name, param_value) in params {
+                    if !joint_search_space.contains_key(&name) {
+                        continue;
+                    }
+                    let distribution = joint_search_space[&name].clone();
+                    joint_params.insert(name, (distribution, param_value));
                 }
-                let distribution = joint_search_space[&name].clone();
-                joint_params.insert(name, (distribution, param_value));
-            }
-            joint_params
-        } else {
-            HashMap::new()
-        };
-
-        drop(guard);
+                joint_params
+            } else {
+                HashMap::new()
+            };
 
         let trial = Trial::new(
             trial_id,
@@ -295,15 +289,9 @@ impl Study {
             trial_number,
             trial_id,
         };
-        let after_trial_result = {
-            let mut sampler_guard = self.sampler.lock().map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::Unexpected,
-                    format!("Failed to acquire a sampler guard: {e}"),
-                )
-            })?;
-            sampler_guard.after_trial(&ctx, self.storage.clone(), &state_values)
-        };
+        let after_trial_result =
+            self.sampler
+                .after_trial(&ctx, self.storage.clone(), &state_values);
 
         let mut storage_guard = self.storage.write().map_err(|e| {
             Error::with_reason(
@@ -619,6 +607,7 @@ mod tests {
     use crate::attr::AttrKey;
     use crate::distribution::Distribution;
     use crate::sampler::{Context as SamplerContext, Sampler};
+    use std::sync::Mutex;
     use std::thread;
 
     use crate::sampler::RandomSampler;
@@ -634,7 +623,7 @@ mod tests {
 
     impl Sampler for RecordingSampler {
         fn sample_independent(
-            &mut self,
+            &self,
             _ctx: &SamplerContext,
             _storage: Arc<RwLock<dyn Storage>>,
             _name: &str,
@@ -648,7 +637,7 @@ mod tests {
         }
 
         fn sample_joint(
-            &mut self,
+            &self,
             _ctx: &SamplerContext,
             _storage: Arc<RwLock<dyn Storage>>,
             _search_space: &HashMap<String, Distribution>,
@@ -657,7 +646,7 @@ mod tests {
         }
 
         fn after_trial(
-            &mut self,
+            &self,
             ctx: &SamplerContext,
             storage: Arc<RwLock<dyn Storage>>,
             state_values: &TrialStateValues,
@@ -993,10 +982,10 @@ mod tests {
     fn test_tell_calls_after_trial_before_storage_update() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let sampler = Arc::new(Mutex::new(RecordingSampler {
+        let sampler = Arc::new(RecordingSampler {
             calls: calls.clone(),
             fail_after_trial: false,
-        }));
+        });
         let study = create_study_with_arc(
             "dummy-after-trial",
             storage.clone(),
@@ -1039,10 +1028,10 @@ mod tests {
     fn test_tell_persists_trial_even_if_after_trial_fails() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let sampler = Arc::new(Mutex::new(RecordingSampler {
+        let sampler = Arc::new(RecordingSampler {
             calls,
             fail_after_trial: true,
-        }));
+        });
         let study = create_study_with_arc(
             "dummy-after-trial-failure",
             storage.clone(),

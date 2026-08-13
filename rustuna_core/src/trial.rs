@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crate::attr::{category_labels_to_attrs, AttrKey, Attrs, CategoryLabel};
 use crate::distribution::Distribution;
@@ -22,7 +22,7 @@ pub struct Trial {
     pub datetime_complete: Option<String>,
     directions: Vec<Direction>,
     storage: Arc<RwLock<dyn Storage>>,
-    sampler: Arc<Mutex<dyn Sampler>>,
+    sampler: Arc<dyn Sampler>,
     joint_params: HashMap<String, (Distribution, f64)>,
     fixed_params: HashMap<String, CategoryLabel>,
     cached_trial: PersistedTrial,
@@ -38,7 +38,7 @@ impl Trial {
         datetime_complete: Option<String>,
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
-        sampler: Arc<Mutex<dyn Sampler>>,
+        sampler: Arc<dyn Sampler>,
         joint_params: HashMap<String, (Distribution, f64)>,
         fixed_params: HashMap<String, CategoryLabel>,
     ) -> Self {
@@ -140,15 +140,9 @@ impl Trial {
             trial_id: self.id,
             directions: self.directions.clone(),
         };
-        let mut sampler_guard = self.sampler.lock().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::SamplerError,
-                format!("Failed to acquire sampler guard: {e}"),
-            )
-        })?;
         let param_value =
-            sampler_guard.sample_independent(&context, self.storage.clone(), name, distribution)?;
-        drop(sampler_guard);
+            self.sampler
+                .sample_independent(&context, self.storage.clone(), name, distribution)?;
 
         let mut storage_guard = self.storage.write().map_err(|e| {
             Error::with_reason(
@@ -516,7 +510,7 @@ mod tests {
     #[test]
     fn test_enqueue_and_suggest_float() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 
@@ -533,7 +527,7 @@ mod tests {
     #[test]
     fn test_enqueue_and_suggest_int() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 
@@ -550,7 +544,7 @@ mod tests {
     #[test]
     fn test_enqueue_fallback_on_out_of_range() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 
@@ -567,7 +561,7 @@ mod tests {
     #[test]
     fn test_enqueue_mixed_with_normal_ask() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 
@@ -590,7 +584,7 @@ mod tests {
     #[test]
     fn test_enqueue_unspecified_param_sampled() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 
@@ -610,7 +604,7 @@ mod tests {
     #[test]
     fn test_trial_user_attr() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 
@@ -649,7 +643,7 @@ mod tests {
     #[test]
     fn test_set_constraints() -> Result<()> {
         let storage = Arc::new(RwLock::new(InMemoryStorage::new()));
-        let sampler = Arc::new(Mutex::new(RandomSampler::new()));
+        let sampler = Arc::new(RandomSampler::new());
         let directions = vec![Direction::Minimize];
         let study = create_study_with_arc("dummy", storage.clone(), sampler, directions)?;
 

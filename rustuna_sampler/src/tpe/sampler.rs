@@ -1,7 +1,7 @@
 use core::panic;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -93,12 +93,12 @@ type SplitValue = (Vec<u32>, Vec<u32>);
 /// }
 /// ```
 pub struct TpeSampler {
-    rng: StdRng,
+    rng: Mutex<StdRng>,
     multivariate: Option<bool>,
     n_startup_trials: usize,
     random_sampler: RandomSampler,
     // TODO(y0z): Change to LruCache<(Vec<&PersistedTrial>, usize), (Vec<&PersistedTrial>, Vec<&PersistedTrial>)>
-    split_cache: HashMap<SplitKey, SplitValue>,
+    split_cache: RwLock<HashMap<SplitKey, SplitValue>>,
 }
 impl Default for TpeSampler {
     fn default() -> Self {
@@ -114,11 +114,11 @@ impl TpeSampler {
         };
         let seed_for_random_sampler = rng.gen();
         Self {
-            rng,
+            rng: Mutex::new(rng),
             multivariate: cfg.multivariate,
             n_startup_trials: cfg.n_startup_trials,
             random_sampler: RandomSampler::seed_from_u64(seed_for_random_sampler),
-            split_cache: HashMap::new(),
+            split_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -144,7 +144,7 @@ impl TpeSampler {
     }
 
     fn sample(
-        &mut self,
+        &self,
         ctx: &Context,
         complete_trials: &[&rustuna_core::trial::PersistedTrial],
         search_space: &HashMap<String, Distribution>,
@@ -169,11 +169,21 @@ impl TpeSampler {
                 .map(|t| t.number)
                 .collect::<Vec<u32>>();
             let split_cache_key = (complete_trial_numbers.clone(), gamma);
+            let cached_split = self
+                .split_cache
+                .read()
+                .map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::SamplerError,
+                        format!("Failed to acquire split cache guard: {e}"),
+                    )
+                })?
+                .get(&split_cache_key)
+                .cloned();
             let (good_trials, poor_trials): (
                 Vec<&rustuna_core::trial::PersistedTrial>,
                 Vec<&rustuna_core::trial::PersistedTrial>,
-            ) = if self.split_cache.contains_key(&split_cache_key) {
-                let (good_nums, poor_nums) = self.split_cache.get(&split_cache_key).unwrap();
+            ) = if let Some((good_nums, poor_nums)) = cached_split {
                 let good_trials = complete_trials
                     .iter()
                     .copied()
@@ -193,10 +203,14 @@ impl TpeSampler {
                 );
                 let good_nums = good_trials.iter().map(|t| t.number).collect();
                 let poor_nums = poor_trials.iter().map(|t| t.number).collect();
-                // We only cache the most recent split
-                self.split_cache.clear();
-                self.split_cache
-                    .insert(split_cache_key, (good_nums, poor_nums));
+                let mut split_cache = self.split_cache.write().map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::SamplerError,
+                        format!("Failed to acquire split cache guard: {e}"),
+                    )
+                })?;
+                split_cache.clear();
+                split_cache.insert(split_cache_key, (good_nums, poor_nums));
                 (good_trials, poor_trials)
             };
             // Multi-objective: uniform weights for l(x) (below), recency ramp for g(x) (above),
@@ -208,7 +222,15 @@ impl TpeSampler {
         };
 
         let n_ei_candidates = 24;
-        let samples_good = pe_good.sample(&mut self.rng, n_ei_candidates);
+        let samples_good = {
+            let mut rng = self.rng.lock().map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::SamplerError,
+                    format!("Failed to acquire RNG guard: {e}"),
+                )
+            })?;
+            pe_good.sample(&mut rng, n_ei_candidates)
+        };
         let mut best_idx = 0usize;
         let mut best_val = f64::NEG_INFINITY;
         for (i, s) in samples_good.iter().enumerate() {
@@ -401,7 +423,7 @@ impl TpeSampler {
 
 impl Sampler for TpeSampler {
     fn sample_independent(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         name: &str,
@@ -440,7 +462,7 @@ impl Sampler for TpeSampler {
     }
 
     fn sample_joint(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
@@ -470,7 +492,7 @@ impl Sampler for TpeSampler {
     }
 
     fn after_trial(
-        &mut self,
+        &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _state_values: &TrialStateValues,

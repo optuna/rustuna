@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -18,16 +18,18 @@ use crate::trial::PyTrialState;
 // rustuna_core::sampler::Sampler. Rustuna can therefore use Python samplers through the same
 // interface as native Rust samplers.
 pub struct ToRustSampler {
-    obj: Py<PyAny>,
+    obj: Mutex<Py<PyAny>>,
 }
 impl ToRustSampler {
     pub fn new(obj: Py<PyAny>) -> Self {
-        ToRustSampler { obj }
+        ToRustSampler {
+            obj: Mutex::new(obj),
+        }
     }
 }
 impl Sampler for ToRustSampler {
     fn sample_independent(
-        &mut self,
+        &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn rustuna_core::storage::Storage>>,
         name: &str,
@@ -43,12 +45,17 @@ impl Sampler for ToRustSampler {
         let study_attrs = study.attrs.clone();
         drop(guard);
 
+        let obj = self.obj.lock().map_err(|e| {
+            rustuna_core::Error::with_reason(
+                rustuna_core::ErrorKind::SamplerError,
+                format!("Failed to acquire sampler object guard: {e}"),
+            )
+        })?;
         Python::attach(|py| {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
             let py_distribution = PyDistribution::new(distribution.clone(), name, &study_attrs);
-            let py_result = self
-                .obj
+            let py_result = obj
                 .call_method1(
                     py,
                     "sample_independent",
@@ -72,16 +79,18 @@ impl Sampler for ToRustSampler {
     }
 
     fn support_joint_sampling(&self) -> bool {
+        let Ok(obj) = self.obj.lock() else {
+            return false;
+        };
         Python::attach(|py| {
-            self.obj
-                .getattr(py, "support_joint_sampling")
+            obj.getattr(py, "support_joint_sampling")
                 .and_then(|x| x.extract::<bool>(py))
                 .unwrap_or(false)
         })
     }
 
     fn sample_joint(
-        &mut self,
+        &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn Storage>>,
         search_space: &HashMap<String, rustuna_core::distribution::Distribution>,
@@ -93,6 +102,12 @@ impl Sampler for ToRustSampler {
         let study_attrs = study.attrs.clone();
         drop(guard);
 
+        let obj = self.obj.lock().map_err(|e| {
+            rustuna_core::Error::with_reason(
+                rustuna_core::ErrorKind::SamplerError,
+                format!("Failed to acquire sampler object guard: {e}"),
+            )
+        })?;
         Python::attach(|py| {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
@@ -112,8 +127,7 @@ impl Sampler for ToRustSampler {
                     )
                 })?;
             }
-            let py_result = self
-                .obj
+            let py_result = obj
                 .call_method1(py, "sample_joint", (py_ctx, py_storage, py_search_space))
                 .map_err(|e| {
                     rustuna_core::Error::with_reason(
@@ -132,7 +146,7 @@ impl Sampler for ToRustSampler {
     }
 
     fn after_trial(
-        &mut self,
+        &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn Storage>>,
         state_values: &TrialStateValues,
@@ -143,8 +157,14 @@ impl Sampler for ToRustSampler {
             _ => None,
         };
 
+        let obj = self.obj.lock().map_err(|e| {
+            rustuna_core::Error::with_reason(
+                rustuna_core::ErrorKind::SamplerError,
+                format!("Failed to acquire sampler object guard: {e}"),
+            )
+        })?;
         Python::attach(|py| {
-            if !self.obj.bind(py).hasattr("after_trial").map_err(|e| {
+            if !obj.bind(py).hasattr("after_trial").map_err(|e| {
                 rustuna_core::Error::with_reason(
                     rustuna_core::ErrorKind::SamplerError,
                     e.to_string(),
@@ -155,8 +175,7 @@ impl Sampler for ToRustSampler {
 
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
-            self.obj
-                .call_method1(py, "after_trial", (py_ctx, py_storage, py_state, py_values))
+            obj.call_method1(py, "after_trial", (py_ctx, py_storage, py_state, py_values))
                 .map_err(|e| {
                     rustuna_core::Error::with_reason(
                         rustuna_core::ErrorKind::SamplerError,

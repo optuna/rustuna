@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -18,7 +17,7 @@ use crate::trial::PyTrialState;
 #[pyclass(name = "NSGAIISampler")]
 #[pyo3(module = "rustuna")]
 pub struct PyNSGAIISampler {
-    pub sampler: Arc<Mutex<NSGAIISampler>>,
+    pub sampler: Arc<NSGAIISampler>,
 }
 #[pymethods]
 impl PyNSGAIISampler {
@@ -47,18 +46,13 @@ impl PyNSGAIISampler {
             ),
         };
         Ok(PyNSGAIISampler {
-            sampler: Arc::new(Mutex::new(rs_sampler)),
+            sampler: Arc::new(rs_sampler),
         })
     }
 
     #[getter]
-    fn support_joint_sampling(&self, py: Python<'_>) -> PyResult<bool> {
-        py.detach(|| {
-            let guard = self.sampler.lock().map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to acquire sampler lock: {e}"))
-            })?;
-            Ok(guard.support_joint_sampling())
-        })
+    fn support_joint_sampling(&self) -> bool {
+        self.sampler.support_joint_sampling()
     }
 
     fn sample_independent(
@@ -75,10 +69,6 @@ impl PyNSGAIISampler {
         let distribution = distribution.distribution.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_independent(&context, arc_storage, &name, &distribution)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to sample independent: {e:?}"))
@@ -101,10 +91,6 @@ impl PyNSGAIISampler {
             .collect();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_joint(&context, arc_storage, &search_space)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to sample joint: {e:?}")))
         })
@@ -132,10 +118,6 @@ impl PyNSGAIISampler {
         let context = ctx.context.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .after_trial(&context, arc_storage, &state_values)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to call after_trial: {e:?}")))
         })
