@@ -679,4 +679,34 @@ mod tests {
             "Optimization with constraints should complete without panicking"
         );
     }
+
+    #[test]
+    fn test_uncompleted_trial() -> Result<()> {
+        let storage = InMemoryStorage::new();
+        let directions = vec![Direction::Minimize, Direction::Minimize];
+        let study = create_study(
+            "uncompleted_trial",
+            storage,
+            NSGAIISampler::new(2, None, 1.0, 1.0),
+            directions,
+        )
+        .unwrap();
+
+        let n_trials = 50;
+        for _ in 0..n_trials {
+            let mut trial = study.ask()?;
+            let x = trial.suggest_int("x", 1, 2)?;
+            let y = trial.suggest_int("y", 1, 2)?;
+            let v0 = (x as f64 - 1.5).powi(2);
+            let v1 = (y as f64 - 1.5).powi(2);
+            if x == 1 {
+                study.tell(trial.number, TrialStateValues::Complete(vec![v0, v1]))?;
+            } else {
+                study.tell(trial.number, TrialStateValues::Fail)?;
+            }
+        }
+
+        assert!(study.get_trials()?.len() == n_trials);
+        Ok(())
+    }
 }
