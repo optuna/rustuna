@@ -7,7 +7,6 @@ use rustuna_core::attr::{AttrKey, Attrs};
 use rustuna_core::distribution::Distribution;
 use rustuna_core::sampler::{Context, Sampler};
 use rustuna_core::storage::Storage;
-use rustuna_core::study::dominates;
 use rustuna_core::study::Direction;
 use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::Result;
@@ -400,7 +399,14 @@ fn constrained_dominates(
     let satisfy_constraints1 = constraints1.values().all(|x| *x <= 0.0);
 
     if satisfy_constraints0 && satisfy_constraints1 {
-        return Ok(dominates(values0, values1, directions));
+        return Ok(values0
+            .iter()
+            .zip(values1)
+            .zip(directions)
+            .all(|((v0, v1), d)| match d {
+                Direction::Minimize => *v0 < *v1,
+                Direction::Maximize => *v0 > *v1,
+            }));
     }
     if satisfy_constraints0 {
         return Ok(true);
