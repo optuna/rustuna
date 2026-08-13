@@ -11,7 +11,27 @@ pub fn split_trials_for_multi_objective<'a>(
     directions: &[Direction],
     gamma: usize,
 ) -> (Vec<&'a PersistedTrial>, Vec<&'a PersistedTrial>) {
-    let n = trials.len();
+    let values = trials
+        .iter()
+        .map(|trial| match &trial.state_values {
+            TrialStateValues::Complete(values) => values.as_slice(),
+            _ => panic!("Unexpected non-complete trial found during multi-objective split"),
+        })
+        .collect::<Vec<_>>();
+    let (good_indices, poor_indices) =
+        split_observation_indices_for_multi_objective(&values, directions, gamma);
+    let good_trials = good_indices.into_iter().map(|i| trials[i]).collect();
+    let poor_trials = poor_indices.into_iter().map(|i| trials[i]).collect();
+    (good_trials, poor_trials)
+}
+
+/// Splits objective observations into promising and non-promising index sets.
+pub fn split_observation_indices_for_multi_objective<T: AsRef<[f64]>>(
+    values: &[T],
+    directions: &[Direction],
+    gamma: usize,
+) -> (Vec<usize>, Vec<usize>) {
+    let n = values.len();
     assert!(
         gamma <= n,
         "gamma must be less than or equal to the number of trials"
@@ -21,18 +41,16 @@ pub fn split_trials_for_multi_objective<'a>(
         return (Vec::new(), Vec::new());
     }
     if gamma == n {
-        return (trials.to_vec(), Vec::new());
+        return ((0..n).collect(), Vec::new());
     }
 
     // Assume minimization (negate value if maximization)
-    let loss_values: Vec<Vec<f64>> = trials
+    let loss_values: Vec<Vec<f64>> = values
         .iter()
-        .map(|t| {
-            let vals = match &t.state_values {
-                TrialStateValues::Complete(v) => v.as_slice(),
-                _ => panic!("Unexpected non-complete trial found during multi-objective split"),
-            };
-            vals.iter()
+        .map(|values| {
+            values
+                .as_ref()
+                .iter()
                 .zip(directions.iter())
                 .map(|(&val, dir)| match dir {
                     Direction::Minimize => val,
@@ -47,19 +65,19 @@ pub fn split_trials_for_multi_objective<'a>(
         rank_to_indices.entry(rank).or_default().push(i);
     }
 
-    let mut good_trials = Vec::with_capacity(gamma);
-    let mut poor_trials = Vec::with_capacity(n - gamma);
+    let mut good_indices = Vec::with_capacity(gamma);
+    let mut poor_indices = Vec::with_capacity(n - gamma);
 
     let mut current_rank = 0usize;
-    while good_trials.len() + rank_to_indices.get(&current_rank).map_or(0, |v| v.len()) <= gamma {
+    while good_indices.len() + rank_to_indices.get(&current_rank).map_or(0, |v| v.len()) <= gamma {
         if let Some(indices) = rank_to_indices.get(&current_rank) {
             for &i in indices.iter() {
-                good_trials.push(trials[i]);
+                good_indices.push(i);
             }
         }
         current_rank += 1;
     }
-    let hss_subset_size = gamma - good_trials.len();
+    let hss_subset_size = gamma - good_indices.len();
     if hss_subset_size > 0 {
         let rank_i_loss_vals = rank_to_indices
             .get(&current_rank)
@@ -104,7 +122,7 @@ pub fn split_trials_for_multi_objective<'a>(
 
         let mut remaining = hss_subset_size;
         for &local in neg_inf_local.iter().take(remaining) {
-            good_trials.push(trials[rank_i_indices[local]]);
+            good_indices.push(rank_i_indices[local]);
         }
         remaining = remaining.saturating_sub(neg_inf_local.len());
 
@@ -138,7 +156,7 @@ pub fn split_trials_for_multi_objective<'a>(
                     take,
                 );
                 for &i in selected_indices.iter() {
-                    good_trials.push(trials[i]);
+                    good_indices.push(i);
                 }
                 remaining = remaining.saturating_sub(take);
             } else {
@@ -147,22 +165,37 @@ pub fn split_trials_for_multi_objective<'a>(
                 // which the outer guard already excluded). Defensive fallback.
                 let take = remaining.min(finite_local.len());
                 for &local in finite_local.iter().take(take) {
-                    good_trials.push(trials[rank_i_indices[local]]);
+                    good_indices.push(rank_i_indices[local]);
                 }
                 remaining = remaining.saturating_sub(take);
             }
         }
 
         for &local in pos_inf_local.iter().take(remaining) {
-            good_trials.push(trials[rank_i_indices[local]]);
+            good_indices.push(rank_i_indices[local]);
         }
     }
-    let good_numbers: HashSet<u32> = good_trials.iter().map(|t| t.number).collect();
-    for &trial in trials.iter() {
-        if !good_numbers.contains(&trial.number) {
-            poor_trials.push(trial);
+    let good_index_set: HashSet<usize> = good_indices.iter().copied().collect();
+    for index in 0..n {
+        if !good_index_set.contains(&index) {
+            poor_indices.push(index);
         }
     }
 
-    (good_trials, poor_trials)
+    (good_indices, poor_indices)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_observation_indices_returns_original_positions() {
+        let values = vec![vec![3.0], vec![1.0], vec![4.0], vec![2.0]];
+        let (good, poor) =
+            split_observation_indices_for_multi_objective(&values, &[Direction::Minimize], 2);
+
+        assert_eq!(good, vec![1, 3]);
+        assert_eq!(poor, vec![0, 2]);
+    }
 }
