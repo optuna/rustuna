@@ -8,6 +8,7 @@ use rustuna_core::distribution::Distribution;
 use rustuna_core::sampler::{Context, Sampler};
 use rustuna_core::storage::Storage;
 use rustuna_core::study::dominates;
+use rustuna_core::study::Direction;
 use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::Result;
 use rustuna_core::{Error, ErrorKind};
@@ -370,23 +371,63 @@ impl Sampler for NSGAIISampler {
     }
 }
 
+/// Return whether `trial0` constrained-dominates `trial1`.
+///
+/// A trial x is said to constrained-dominate a trial y, if any of the following conditions is
+/// true:
+/// 1) Trial x is feasible and trial y is not.
+/// 2) Trial x and y are both infeasible, but solution x has a smaller overall constraint
+///    violation.
+/// 3) Trial x and y are feasible and trial x dominates trial y.
+///
+fn constrained_dominates(
+    trial0: &PersistedTrial,
+    trial1: &PersistedTrial,
+    directions: &[Direction],
+) -> Result<bool> {
+    let values0 = match &trial0.state_values {
+        TrialStateValues::Complete(values) => values,
+        _ => return Ok(false),
+    };
+    let values1 = match &trial1.state_values {
+        TrialStateValues::Complete(values) => values,
+        _ => return Ok(true),
+    };
+
+    let constraints0 = trial0.constraints()?;
+    let satisfy_constraints0 = constraints0.values().all(|x| *x <= 0.0);
+    let constraints1 = trial0.constraints()?;
+    let satisfy_constraints1 = constraints1.values().all(|x| *x <= 0.0);
+
+    if satisfy_constraints0 && satisfy_constraints1 {
+        return Ok(dominates(values0, values1, directions));
+    }
+    if satisfy_constraints0 {
+        return Ok(true);
+    }
+    if satisfy_constraints1 {
+        return Ok(false);
+    }
+
+    let violation0: f64 = constraints0.values().filter(|&x| *x > 0.0).sum();
+    let violation1: f64 = constraints1.values().filter(|&x| *x > 0.0).sum();
+    Ok(violation0 < violation1)
+}
+
 fn fast_non_dominated_sort(
     ctx: &Context,
     trials: &[Option<PersistedTrial>],
     population_numbers: &[u32],
 ) -> Result<Vec<Vec<u32>>> {
     let n = population_numbers.len();
-    let population_values = population_numbers
+
+    let population_trials = population_numbers
         .iter()
         .map(|n| {
-            let trial = trials
+            trials
                 .get(*n as usize)
                 .and_then(|trial| trial.as_ref())
-                .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))?;
-            match &trial.state_values {
-                TrialStateValues::Complete(values) => Ok(values.clone()),
-                _ => Ok(vec![f64::NAN; ctx.directions.len()]),
-            }
+                .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))
         })
         .collect::<Result<Vec<_>>>()?;
 
@@ -398,18 +439,14 @@ fn fast_non_dominated_sort(
             if i >= j {
                 continue;
             }
-            if dominates(
-                &population_values[i],
-                &population_values[j],
-                &ctx.directions,
-            ) {
+            if constrained_dominates(population_trials[i], population_trials[j], &ctx.directions)? {
                 dominates_list[i].push(j);
                 dominated_count[j] += 1;
-            } else if dominates(
-                &population_values[j],
-                &population_values[i],
+            } else if constrained_dominates(
+                population_trials[j],
+                population_trials[i],
                 &ctx.directions,
-            ) {
+            )? {
                 dominates_list[j].push(i);
                 dominated_count[i] += 1;
             }
@@ -612,5 +649,34 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_constraints() {
+        let storage = InMemoryStorage::new();
+        let directions = vec![Direction::Minimize, Direction::Minimize];
+        let study = create_study(
+            "constraints",
+            storage,
+            NSGAIISampler::new(2, None, 1.0, 1.0),
+            directions,
+        )
+        .unwrap();
+        let n_trials = 10;
+        let result = study.optimize(
+            |mut t| {
+                let x = t.suggest_float("x", -15.0, 30.0)?;
+                let y = t.suggest_float("y", -15.0, 30.0)?;
+                let v0 = 4.0 * x.powi(2) + 4.0 * y.powi(2);
+                let v1 = (x - 5.0).powi(2) + (y - 5.0).powi(2);
+                t.set_constraints(HashMap::from([(String::from("c0"), 1000.0 - v0)]))?;
+                Ok(vec![v0, v1])
+            },
+            n_trials,
+        );
+        assert!(
+            result.is_ok(),
+            "Optimization with constraints should complete without panicking"
+        );
     }
 }
