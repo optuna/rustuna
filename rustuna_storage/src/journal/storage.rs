@@ -17,6 +17,9 @@ use rustuna_core::trial::{PersistedTrial, TrialState, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
 
 use super::{JournalBackend, JournalLog, JournalOperation};
+use crate::constraints::{
+    constraints_from_value, constraints_to_map, constraints_to_values, OPTUNA_CONSTRAINTS_KEY,
+};
 use crate::datetime::{journal_datetime_to_naive_utc, naive_utc_to_aware_utc, now_aware_utc};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -224,9 +227,15 @@ impl Storage for JournalStorage {
                     user_attrs.insert(key.to_string(), value.clone());
                 }
                 AttrKey::System(key) => {
-                    system_attrs.insert(key.to_string(), value.clone());
+                    system_attrs.insert(key.to_string(), Value::String(value.clone()));
                 }
             }
+        }
+        if !template.constraints.is_empty() {
+            system_attrs.insert(
+                OPTUNA_CONSTRAINTS_KEY.to_string(),
+                Value::Array(constraints_to_values(&template.constraints)),
+            );
         }
 
         let mut params = HashMap::with_capacity(template.distributions.len());
@@ -262,6 +271,10 @@ impl Storage for JournalStorage {
         fields.insert("distributions".to_string(), to_raw(&distributions)?);
         fields.insert("user_attrs".to_string(), to_raw(&user_attrs)?);
         fields.insert("system_attrs".to_string(), to_raw(&system_attrs)?);
+        fields.insert(
+            "constraints".to_string(),
+            to_raw(&constraints_to_map(&template.constraints))?,
+        );
         fields.insert(
             "intermediate_values".to_string(),
             to_raw(&intermediate_values_json)?,
@@ -450,6 +463,32 @@ impl Storage for JournalStorage {
             });
         }
         self.backend.append_logs(&logs)?;
+        self.sync_with_backend()?;
+        Ok(())
+    }
+
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> Result<()> {
+        self.sync_with_backend()?;
+        self.replay.ensure_trial_updatable(trial_id)?;
+
+        let mut fields = HashMap::new();
+        fields.insert("trial_id".to_string(), to_raw(&trial_id)?);
+        fields.insert(
+            "system_attr".to_string(),
+            to_raw(&HashMap::from([(
+                OPTUNA_CONSTRAINTS_KEY,
+                Value::Array(constraints_to_values(&constraints)),
+            )]))?,
+        );
+        fields.insert(
+            "constraints".to_string(),
+            to_raw(&constraints_to_map(&constraints))?,
+        );
+        self.write_log(JournalOperation::SetTrialSystemAttr, fields)?;
         self.sync_with_backend()?;
         Ok(())
     }
@@ -1030,6 +1069,7 @@ impl JournalReplayState {
         let distributions = get_optional_raw_map(&log.fields, "distributions")?;
         let user_attrs = get_optional_raw_map(&log.fields, "user_attrs")?;
         let system_attrs = get_optional_raw_map(&log.fields, "system_attrs")?;
+        let stored_constraints = get_optional_raw(&log.fields, "constraints");
         let intermediate_values = get_optional_raw_map(&log.fields, "intermediate_values")?;
         let datetime_start = get_optional_string(&log.fields, "datetime_start")?
             .as_deref()
@@ -1105,9 +1145,26 @@ impl JournalReplayState {
         }
         if let Some(system_attrs) = system_attrs {
             for (k, v) in system_attrs {
-                let value = raw_value_to_attr_string(&v)?;
-                attrs.insert(AttrKey::System(k.clone().into()), value);
+                if k == OPTUNA_CONSTRAINTS_KEY {
+                    if stored_constraints.is_none() {
+                        let value: Value = serde_json::from_str(v.get()).map_err(|e| {
+                            Error::with_reason(ErrorKind::StorageError, e.to_string())
+                        })?;
+                        trial.constraints = constraints_from_value(&value)?;
+                    }
+                } else if let Some(name) = k.strip_prefix("constraints:") {
+                    let value = parse_f64_raw(&v)?;
+                    trial.constraints.insert(name.to_string(), value);
+                } else {
+                    let value = raw_value_to_attr_string(&v)?;
+                    attrs.insert(AttrKey::System(k.clone().into()), value);
+                }
             }
+        }
+        if let Some(stored_constraints) = stored_constraints {
+            let value: Value = serde_json::from_str(stored_constraints.get())
+                .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+            trial.constraints = constraints_from_value(&value)?;
         }
         if let Some(values) = intermediate_values {
             trial
@@ -1397,9 +1454,12 @@ impl JournalReplayState {
 
     fn apply_set_trial_system_attr(&mut self, log: &JournalLog, worker_id: &str) -> Result<()> {
         let trial_id = get_u32(&log.fields, "trial_id")?;
-        let Some(attrs) = get_optional_raw_map(&log.fields, "system_attr_str")? else {
+        let attrs = get_optional_raw_map(&log.fields, "system_attr_str")?;
+        let optuna_attrs = get_optional_raw_map(&log.fields, "system_attr")?;
+        let stored_constraints = get_optional_raw(&log.fields, "constraints");
+        if attrs.is_none() && optuna_attrs.is_none() && stored_constraints.is_none() {
             return Ok(());
-        };
+        }
         let (study_id, trial_number) = match self.trial_id_to_study_number.get(&trial_id) {
             Some(v) => *v,
             None => {
@@ -1433,18 +1493,44 @@ impl JournalReplayState {
             )
         })?;
         let is_finished = trial.is_finished();
-        for (key, value) in attrs {
-            if is_finished {
-                if self.is_issued_by_this_worker(log, worker_id) {
-                    return Err(Error::with_reason(
-                        ErrorKind::TrialAlreadyFinished,
-                        format!("Trial already finished, cannot set system attr: key={key}"),
-                    ));
-                }
-                return Ok(());
+        if is_finished {
+            if self.is_issued_by_this_worker(log, worker_id) {
+                return Err(Error::with_reason(
+                    ErrorKind::TrialAlreadyFinished,
+                    format!(
+                        "Trial already finished, cannot set system attributes: trial_id={trial_id}"
+                    ),
+                ));
             }
-            let v = raw_value_to_attr_string(&value)?;
-            trial.attrs.insert(AttrKey::System(key.clone().into()), v);
+            return Ok(());
+        }
+
+        if let Some(stored_constraints) = stored_constraints {
+            let value: Value = serde_json::from_str(stored_constraints.get())
+                .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+            trial.constraints = constraints_from_value(&value)?;
+        } else if let Some(value) = optuna_attrs
+            .as_ref()
+            .and_then(|attrs| attrs.get(OPTUNA_CONSTRAINTS_KEY))
+        {
+            let value: Value = serde_json::from_str(value.get())
+                .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+            trial.constraints = constraints_from_value(&value)?;
+        }
+
+        if let Some(attrs) = attrs {
+            for (key, value) in attrs {
+                if let Some(name) = key.strip_prefix("constraints:") {
+                    trial
+                        .constraints
+                        .insert(name.to_string(), parse_f64_raw(&value)?);
+                } else {
+                    let value = raw_value_to_attr_string(&value)?;
+                    trial
+                        .attrs
+                        .insert(AttrKey::System(key.clone().into()), value);
+                }
+            }
         }
         Ok(())
     }
@@ -2539,6 +2625,24 @@ mod tests {
         assert!(!trial
             .attrs
             .contains_key(&AttrKey::System("intermediate_values".into())));
+        Ok(())
+    }
+
+    #[test]
+    fn set_trial_constraints_replays_named_values() -> Result<()> {
+        let (mut storage, logs) = new_storage()?;
+        let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
+        let trial_id = storage.create_new_trial(study_id)?.id;
+        let constraints = HashMap::from([("c0".to_string(), 1.0), ("c1".to_string(), -1.0)]);
+
+        storage.set_trial_constraints(trial_id, constraints.clone())?;
+        let backend = InMemoryJournalBackend { logs: logs.clone() };
+        let mut reloaded = JournalStorage::new(Box::new(backend))?;
+        let trial = reloaded.get_trial(trial_id)?;
+        assert_eq!(trial.constraints, constraints);
+        assert!(!trial
+            .attrs
+            .contains_key(&AttrKey::System(OPTUNA_CONSTRAINTS_KEY.into())));
         Ok(())
     }
 

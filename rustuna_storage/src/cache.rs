@@ -61,6 +61,11 @@ pub trait CachedStorageBackend: Send + Sync {
         trial_id: u32,
         intermediate_values: HashMap<u32, f64>,
     ) -> Result<()>;
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> Result<()>;
     fn get_studies(&mut self) -> Result<Vec<PersistedStudy>>;
     fn get_study(&mut self, study_id: u32) -> Result<PersistedStudy>;
     fn get_trial(&mut self, trial_id: u32) -> Result<PersistedTrial>;
@@ -540,6 +545,36 @@ impl rustuna_core::storage::Storage for CachedStorage {
         Ok(())
     }
 
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> Result<()> {
+        let (study_id, trial_number) = self.resolve_trial_location(trial_id)?;
+        if !self.is_trial_finished_in_cache(study_id, trial_number) {
+            self.refresh_trials(study_id)?;
+        }
+        if self.is_trial_finished_in_cache(study_id, trial_number) {
+            return Err(Error::new(ErrorKind::TrialAlreadyFinished));
+        }
+        if self.is_trial_discarded_in_cache(study_id, trial_number) {
+            return Err(Error::new(ErrorKind::TrialDiscarded));
+        }
+
+        self.backend
+            .set_trial_constraints(trial_id, constraints.clone())?;
+        let trials = self
+            .trials
+            .get_mut(&study_id)
+            .ok_or_else(|| Error::new(ErrorKind::StudyNotFound))?;
+        let trial = trials
+            .get_mut(trial_number as usize)
+            .and_then(|trial| trial.as_mut())
+            .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))?;
+        trial.constraints = constraints;
+        Ok(())
+    }
+
     fn get_studies(&mut self) -> Result<&Vec<PersistedStudy>> {
         let loaded = self.backend.get_studies()?;
         self.studies = loaded;
@@ -865,6 +900,14 @@ mod tests {
                 .set_trial_intermediate_values(trial_id, intermediate_values)
         }
 
+        fn set_trial_constraints(
+            &mut self,
+            trial_id: u32,
+            constraints: HashMap<String, f64>,
+        ) -> Result<()> {
+            self.inner.set_trial_constraints(trial_id, constraints)
+        }
+
         fn get_studies(&mut self) -> Result<Vec<PersistedStudy>> {
             Ok(self.inner.get_studies()?.clone())
         }
@@ -1141,6 +1184,24 @@ mod tests {
         let backend_trial = storage.backend.get_trial(trial_id)?;
         assert_eq!(backend_trial.intermediate_values[&0], 0.1);
         assert_eq!(backend_trial.intermediate_values[&2], 0.3);
+        Ok(())
+    }
+
+    #[test]
+    fn set_trial_constraints_updates_backend_and_cache() -> Result<()> {
+        let mut backend = DummyBackend::new();
+        let study_id = backend.create_new_study("s", vec![Direction::Minimize])?.id;
+        let trial_id = backend.create_new_trial(study_id)?.id;
+
+        let mut storage = CachedStorage::new(Box::new(backend));
+        let constraints = HashMap::from([("c0".to_string(), 1.0)]);
+        storage.set_trial_constraints(trial_id, constraints.clone())?;
+
+        assert_eq!(storage.get_trial(trial_id)?.constraints, constraints);
+        assert_eq!(
+            storage.backend.get_trial(trial_id)?.constraints,
+            constraints
+        );
         Ok(())
     }
 

@@ -377,16 +377,16 @@ struct ConstraintMetrics {
     violation: f64,
 }
 
-fn constraint_metrics(trial: &PersistedTrial) -> Result<Option<ConstraintMetrics>> {
-    let constraints = trial.constraints()?;
+fn constraint_metrics(trial: &PersistedTrial) -> Option<ConstraintMetrics> {
+    let constraints = trial.constraints();
     if constraints.is_empty() {
-        return Ok(None);
+        return None;
     }
 
-    Ok(Some(ConstraintMetrics {
+    Some(ConstraintMetrics {
         is_feasible: constraints.values().all(|x| *x <= 0.0),
         violation: constraints.values().filter(|&x| *x > 0.0).sum(),
-    }))
+    })
 }
 
 /// Return whether `trial0` constrained-dominates `trial1`.
@@ -466,7 +466,7 @@ fn fast_non_dominated_sort(
             };
             // Validate each value vector once before the quadratic pairwise comparison.
             dominates(values, values, &ctx.directions)?;
-            Ok((values.as_slice(), constraint_metrics(trial)?))
+            Ok((values.as_slice(), constraint_metrics(trial)))
         })
         .collect::<Result<Vec<_>>>()?;
     let has_constraints = population

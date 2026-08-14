@@ -37,6 +37,19 @@ to_rustuna_state_map = {
 }
 to_optuna_state_map = {v: k for k, v in to_rustuna_state_map.items()}
 
+_OPTUNA_CONSTRAINTS_KEY = "constraints"
+_RUSTUNA_CONSTRAINTS_KEY = "rustuna:constraints"
+
+
+def _extract_constraints(system_attrs: dict[str, Any]) -> dict[str, float]:
+    named_constraints = system_attrs.pop(_RUSTUNA_CONSTRAINTS_KEY, None)
+    optuna_constraints = system_attrs.pop(_OPTUNA_CONSTRAINTS_KEY, None)
+    if isinstance(named_constraints, dict):
+        return {str(name): float(value) for name, value in named_constraints.items()}
+    if isinstance(optuna_constraints, (list, tuple)):
+        return {str(index): float(value) for index, value in enumerate(optuna_constraints)}
+    return {}
+
 
 def to_optuna_state(state: rustuna.trial.TrialState) -> optuna.trial.TrialState:
     """Convert a Rustuna trial state to an Optuna trial state."""
@@ -64,7 +77,9 @@ def to_persisted_trial(
     study_id: int,
 ) -> rustuna.trial.PersistedTrial:
     """Convert an Optuna frozen trial to a Rustuna persisted trial."""
-    rustuna_system_attrs = to_rustuna_attrs(trial.system_attrs)
+    system_attrs = dict(trial.system_attrs)
+    constraints = _extract_constraints(system_attrs)
+    rustuna_system_attrs = to_rustuna_attrs(system_attrs)
 
     distributions: dict[str, Distribution] = {}
     for param_name in trial.distributions:
@@ -82,6 +97,7 @@ def to_persisted_trial(
         intermediate_values=trial.intermediate_values,
         user_attrs=to_rustuna_attrs(trial.user_attrs),
         system_attrs=rustuna_system_attrs,
+        constraints=constraints,
         datetime_start=trial.datetime_start,
         datetime_complete=trial.datetime_complete,
     )
@@ -256,6 +272,12 @@ class FrozenTrialLike(FrozenTrial):
 
         system_attrs = self._persisted_trial.system_attrs
         self.__system_attrs = to_optuna_attrs(dict(system_attrs))
+        constraints = self._persisted_trial.constraints
+        if constraints:
+            sorted_constraints = sorted(constraints.items())
+            self.__system_attrs[_OPTUNA_CONSTRAINTS_KEY] = [
+                value for _, value in sorted_constraints
+            ]
         return self.__system_attrs
 
     @system_attrs.setter

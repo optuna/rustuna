@@ -8,8 +8,6 @@ use crate::storage::Storage;
 use crate::study::Direction;
 use crate::{Error, ErrorKind, Result};
 
-const CONSTRAINTS_KEY: &str = "constraints";
-
 /// A trial object used while evaluating an objective function.
 ///
 /// This is the Rustuna counterpart of `optuna.trial.Trial`. It provides parameter suggestion
@@ -284,26 +282,15 @@ impl Trial {
 
     /// Sets multiple constraints on the trial.
     pub fn set_constraints(&mut self, constraints: HashMap<String, f64>) -> Result<()> {
-        let mut attrs = Attrs::with_capacity(constraints.len());
-        for (key, value) in constraints {
-            let key_with_constraint_prefix = format!("{}:{}", CONSTRAINTS_KEY, key);
-            attrs.insert(
-                AttrKey::System(key_with_constraint_prefix.as_str().into()),
-                value.to_string(),
-            );
-            self.cached_trial.attrs.insert(
-                AttrKey::System(key_with_constraint_prefix.into()),
-                value.to_string(),
-            );
-        }
         let mut guard = self.storage.write().map_err(|e| {
             Error::with_reason(
                 ErrorKind::StorageError,
                 format!("Failed to acquire storage guard: {e}"),
             )
         })?;
-        guard.set_trial_attrs(self.id, attrs, false)?;
+        guard.set_trial_constraints(self.id, constraints.clone())?;
         drop(guard);
+        self.cached_trial.constraints = constraints;
         Ok(())
     }
 }
@@ -325,6 +312,8 @@ pub struct PersistedTrial {
     /// Rustuna does not currently provide pruner support. This field exists to preserve Optuna
     /// trial data and may be used by future pruning APIs.
     pub intermediate_values: HashMap<u32, f64>,
+    /// Named constraint values used by constrained samplers.
+    pub constraints: HashMap<String, f64>,
     pub attrs: Attrs,
     /// When the trial started, as timezone-naive **UTC** (`%Y-%m-%d %H:%M:%S%.f`).
     ///
@@ -347,6 +336,7 @@ impl PersistedTrial {
             internal_params: HashMap::new(),
             distributions: HashMap::new(),
             intermediate_values: HashMap::new(),
+            constraints: HashMap::new(),
             attrs: Attrs::new(),
             datetime_start: None,
             datetime_complete: None,
@@ -402,23 +392,8 @@ impl PersistedTrial {
     }
 
     /// Gets constraints on the trial.
-    pub fn constraints(&self) -> Result<HashMap<String, f64>, Error> {
-        let mut constraints_dict: HashMap<String, f64> = HashMap::new();
-        for (key, value) in &self.attrs {
-            if let AttrKey::System(key_system) = key {
-                if key_system.as_str().starts_with(CONSTRAINTS_KEY) {
-                    let key: String = key_system.as_str()[CONSTRAINTS_KEY.len() + 1..].into();
-                    let value: f64 = value.parse::<f64>().map_err(|e| {
-                        Error::with_reason(
-                            ErrorKind::Unexpected,
-                            format!("Failed to parse constraint as f64 : {e}"),
-                        )
-                    })?;
-                    constraints_dict.insert(key, value);
-                }
-            }
-        }
-        Ok(constraints_dict)
+    pub fn constraints(&self) -> &HashMap<String, f64> {
+        &self.constraints
     }
 }
 
@@ -621,8 +596,14 @@ mod tests {
         let _ = study.tell(trial.number, TrialStateValues::Complete(vec![0.0]));
         let trials = study.get_trials()?;
 
-        let constraints = trials[0].constraints()?;
-        assert_eq!(constraints, HashMap::from([(String::from("c0"), 10.0)]));
+        assert_eq!(
+            trials[0].constraints(),
+            &HashMap::from([(String::from("c0"), 10.0)])
+        );
+        assert!(trials[0].attrs.keys().all(|key| match key {
+            AttrKey::System(key) => !key.as_str().starts_with("constraints"),
+            AttrKey::User(_) => true,
+        }));
         Ok(())
     }
 }

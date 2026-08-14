@@ -130,6 +130,7 @@ fn study_attrs_from_distributions(distributions: &HashMap<String, PyDistribution
         distributions = None,
         user_attrs = None,
         system_attrs = None,
+        constraints = None,
         intermediate_values = None,
     )
 )]
@@ -142,6 +143,7 @@ pub fn py_create_trial(
     distributions: Option<HashMap<String, PyDistribution>>,
     user_attrs: Option<HashMap<String, String>>,
     system_attrs: Option<HashMap<String, String>>,
+    constraints: Option<HashMap<String, f64>>,
     intermediate_values: Option<HashMap<u32, f64>>,
 ) -> PyResult<PyPersistedTrial> {
     let mut trial = PersistedTrial::new(0, 0, 0);
@@ -159,6 +161,7 @@ pub fn py_create_trial(
         user_attrs.unwrap_or_default(),
         system_attrs.unwrap_or_default(),
     );
+    trial.constraints = constraints.unwrap_or_default();
 
     let now = rustuna_core::datetime::now_naive_utc();
     if matches!(state, PyTrialState::WAITING) {
@@ -504,7 +507,7 @@ impl PyPersistedTrial {
 #[pymethods]
 impl PyPersistedTrial {
     #[new]
-    #[pyo3(signature = (*, trial_id, study_id, number, state, value=None, values=None, params=None, distributions=None, user_attrs=None, system_attrs=None, intermediate_values=None, datetime_start=None, datetime_complete=None))]
+    #[pyo3(signature = (*, trial_id, study_id, number, state, value=None, values=None, params=None, distributions=None, user_attrs=None, system_attrs=None, constraints=None, intermediate_values=None, datetime_start=None, datetime_complete=None))]
     #[allow(clippy::too_many_arguments)]
     pub fn py_new(
         trial_id: u32,
@@ -517,6 +520,7 @@ impl PyPersistedTrial {
         distributions: Option<HashMap<String, PyDistribution>>,
         user_attrs: Option<HashMap<String, String>>,
         system_attrs: Option<HashMap<String, String>>,
+        constraints: Option<HashMap<String, f64>>,
         intermediate_values: Option<HashMap<u32, f64>>,
         datetime_start: Option<Bound<'_, PyAny>>,
         datetime_complete: Option<Bound<'_, PyAny>>,
@@ -536,6 +540,7 @@ impl PyPersistedTrial {
             user_attrs.unwrap_or_default(),
             system_attrs.unwrap_or_default(),
         );
+        trial.constraints = constraints.unwrap_or_default();
         trial.datetime_start = datetime_start
             .as_ref()
             .map(py_datetime_to_naive_utc)
@@ -701,20 +706,7 @@ impl PyPersistedTrial {
 
     #[getter]
     fn constraints(&self) -> PyResult<HashMap<String, f64>> {
-        match &self.source {
-            PyPersistedTrialSource::Owned(trial) => trial.constraints().map_err(err_to_exceptions),
-            PyPersistedTrialSource::StorageBacked {
-                storage, trial_id, ..
-            } => {
-                let guard = storage.read().map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
-                })?;
-                guard
-                    .get_cached_trial(*trial_id)
-                    .and_then(|trial| trial.constraints())
-                    .map_err(err_to_exceptions)
-            }
-        }
+        self.with_trial(|trial| Ok(trial.constraints().clone()))
     }
 
     #[pyo3(name = "get_user_attr", signature = (key, *, decoder = None, default = None))]
@@ -932,5 +924,6 @@ pub fn pyobject_to_persisted_trial_with_category_labels(
     let user_attrs = trial.getattr("user_attrs")?;
     let system_attrs = trial.getattr("system_attrs")?;
     persisted_trial.attrs = pyobj_to_attrs(&user_attrs, &system_attrs)?;
+    persisted_trial.constraints = trial.getattr("constraints")?.extract()?;
     Ok((persisted_trial, category_attrs))
 }

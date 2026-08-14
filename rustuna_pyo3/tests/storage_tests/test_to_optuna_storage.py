@@ -71,6 +71,23 @@ class TestRustunaStorage(StorageTestCase):
         assert len(trials2) == 2
         assert {t._trial_id for t in trials2} == {trial_id0, trial_id1}
 
+    def test_constraints_use_optuna_system_attrs(self, storage: BaseStorage) -> None:
+        assert isinstance(storage, ToOptunaStorage)
+        study_id = storage.create_new_study(directions=[StudyDirection.MINIMIZE])
+        trial_id = storage.create_new_trial(study_id)
+
+        storage._storage.set_trial_constraints(
+            trial_id, {"c1": -1.0, "c0": 1.0}
+        )
+        trial = storage.get_trial(trial_id)
+        assert trial.system_attrs["constraints"] == [1.0, -1.0]
+        assert "rustuna:constraints" not in trial.system_attrs
+
+        optuna_trial_id = storage.create_new_trial(study_id)
+        storage.set_trial_system_attr(optuna_trial_id, "constraints", [2.0, -2.0])
+        rustuna_trial = storage._storage.get_trial(optuna_trial_id)
+        assert rustuna_trial.constraints == {"0": 2.0, "1": -2.0}
+
     @pytest.mark.skip("Rustuna cannot store objective values for failed state")
     def test_get_trial(self, storage: BaseStorage) -> None:
         super().test_get_trial(storage)

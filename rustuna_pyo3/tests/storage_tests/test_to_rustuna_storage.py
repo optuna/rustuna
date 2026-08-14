@@ -25,6 +25,40 @@ def test_optimize_with_optuna_storage():
     rustuna_study.optimize(objective, n_trials=10)
 
 
+def test_constraints_round_trip_with_optuna_storage() -> None:
+    optuna_storage = optuna.storages.InMemoryStorage()
+    storage = ToRustunaStorage(optuna_storage)
+    study = rustuna.create_study(storage=storage)
+
+    def objective(trial: rustuna.Trial) -> float:
+        trial.set_constraints({"c1": -1.0, "c0": 1.0})
+        return 0.0
+
+    study.optimize(objective, n_trials=1)
+    assert study.trials[0].constraints == {"c0": 1.0, "c1": -1.0}
+
+    optuna_trial = optuna_storage.get_trial(study.trials[0]._trial_id)
+    assert optuna_trial.system_attrs["constraints"] == [1.0, -1.0]
+    assert optuna_trial.system_attrs["rustuna:constraints"] == {
+        "c0": 1.0,
+        "c1": -1.0,
+    }
+
+
+def test_reads_optuna_constraints_into_dedicated_field() -> None:
+    optuna_storage = optuna.storages.InMemoryStorage()
+    study_id = optuna_storage.create_new_study(
+        [optuna.study.StudyDirection.MINIMIZE]
+    )
+    trial_id = optuna_storage.create_new_trial(study_id)
+    optuna_storage.set_trial_system_attr(trial_id, "constraints", [1.0, -1.0])
+
+    storage = ToRustunaStorage(optuna_storage)
+    trial = storage.get_trials(study_id)[0]
+    assert trial.constraints == {"0": 1.0, "1": -1.0}
+    assert "optuna_attr:constraints" not in trial.system_attrs
+
+
 def test_duplicate_study_error_with_optuna_storage_bridge():
     storage = ToRustunaStorage(optuna.storages.InMemoryStorage())
     rustuna.create_study(storage=storage, study_name="dup-study")

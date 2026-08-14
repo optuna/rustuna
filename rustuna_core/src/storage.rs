@@ -69,6 +69,12 @@ pub trait Storage: Send + Sync {
         trial_id: u32,
         intermediate_values: HashMap<u32, f64>,
     ) -> Result<()>;
+    /// Stores named constraint values for a trial.
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> Result<()>;
     // Design Note:
     // get_* methods take &mut self to allow in-place cache refresh in wrapper implementations
     // (e.g., CachedStorage). With &self it is impossible to safely update caches and return
@@ -440,6 +446,23 @@ impl Storage for InMemoryStorage {
         )?;
         check_trial_is_updatable(trial)?;
         trial.intermediate_values.extend(intermediate_values);
+        Ok(())
+    }
+
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> Result<()> {
+        let (study_id, trial_number) =
+            get_study_id_trial_number_by_trial_id(&self.trial_id_number_map, trial_id)?;
+        let trial = discarded_if_none(
+            get_mut_trials_by_study_id(&mut self.trials, study_id)?
+                .get_mut(trial_number as usize)
+                .and_then(Option::as_mut),
+        )?;
+        check_trial_is_updatable(trial)?;
+        trial.constraints = constraints;
         Ok(())
     }
 

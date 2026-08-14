@@ -299,6 +299,16 @@ class StorageProtocol(Protocol):
             attrs: User attributes to set.
         """
 
+    def set_trial_constraints(
+        self, trial_id: int, constraints: dict[str, float]
+    ) -> None:
+        """Set constraint values of a trial.
+
+        Args:
+            trial_id: ID of the trial.
+            constraints: Named constraint values to set.
+        """
+
     def set_trial_intermediate_value(
         self, trial_id: int, step: int, intermediate_value: float
     ) -> None:

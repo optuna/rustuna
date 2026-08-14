@@ -200,6 +200,16 @@ impl ToPythonStorage {
         self.binding.set_trial_user_attrs(py, trial_id, attrs)
     }
 
+    fn set_trial_constraints(
+        &self,
+        py: Python<'_>,
+        trial_id: u32,
+        constraints: std::collections::HashMap<String, f64>,
+    ) -> PyResult<()> {
+        self.binding
+            .set_trial_constraints(py, trial_id, constraints)
+    }
+
     fn set_trial_intermediate_value(
         &self,
         py: Python<'_>,

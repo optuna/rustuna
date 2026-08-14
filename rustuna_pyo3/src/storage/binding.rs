@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -438,6 +439,22 @@ impl StorageBinding {
                 .set_trial_intermediate_values(trial_id, intermediate_values)
                 .map_err(err_to_exceptions)?;
             Ok(())
+        })
+    }
+
+    pub(crate) fn set_trial_constraints(
+        &self,
+        py: Python<'_>,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> PyResult<()> {
+        py.detach(|| -> PyResult<()> {
+            let mut guard = self.storage.write().map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
+            })?;
+            guard
+                .set_trial_constraints(trial_id, constraints)
+                .map_err(err_to_exceptions)
         })
     }
 

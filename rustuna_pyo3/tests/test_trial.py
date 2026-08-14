@@ -13,6 +13,7 @@ def test_create_trial() -> None:
         value=5.0,
         user_attrs={"user": "attr"},
         system_attrs={"system": "attr"},
+        constraints={"c0": 1.0},
     )
 
     assert trial._trial_id == 0
@@ -23,6 +24,7 @@ def test_create_trial() -> None:
     assert trial.params == {"x": 1.5, "y": "foo"}
     assert trial.user_attrs["user"] == "attr"
     assert trial.system_attrs["system"] == "attr"
+    assert trial.constraints == {"c0": 1.0}
     assert trial.datetime_start is not None
     assert trial.datetime_complete is not None
 
@@ -117,3 +119,4 @@ def test_constraints() -> None:
     study.optimize(objective, n_trials=1)
     assert study.trials[0].constraints["c0"] == 5.0
     assert study.trials[0].constraints["c1"] == 10.0
+    assert not any(key.startswith("constraints") for key in study.trials[0].system_attrs)

@@ -2,29 +2,29 @@
 // $ cargo run --example quadratic
 
 use rustuna_core::storage::InMemoryStorage;
-use rustuna_core::study::get_best_trial;
 use rustuna_core::study::{create_study, Direction};
 use rustuna_core::Result;
-use rustuna_sampler::tpe::TpeSampler;
+use rustuna_sampler::nsgaii::NSGAIISampler;
+use std::collections::HashMap;
 
 fn main() -> Result<()> {
     let storage = InMemoryStorage::new();
-    let directions = vec![Direction::Minimize];
-    let study = create_study("simple-quadratic", storage, TpeSampler::new(), directions)?;
+    let directions = vec![Direction::Minimize, Direction::Minimize];
+    let study = create_study("simple-quadratic", storage, NSGAIISampler::seed_from_u64(1,50, None, 0.9, 0.1), directions)?;
 
     study.optimize(
         |mut t| {
-            let x = t.suggest_float("x", 0.0, 10.0)?;
-            let y = t.suggest_int("y", 0, 10)?;
-            let value = (x - 3.0).powi(2) + (y - 5).pow(2) as f64;
-            println!("{:2} x: {}, y: {}, value: {}", t.number, x, y, value);
-            Ok(vec![value])
+            let x = t.suggest_float("x", -15.0, 30.0)?;
+            let y = t.suggest_float("y", -15.0, 30.0)?;
+
+            let v0 = 4.0 * x.powi(2) + 4.0 * y.powi(2) as f64;
+            let v1 = (x - 5.0).powi(2) + 4.0 * (y - 5.0).powi(2) as f64;
+            // t.set_constraints(HashMap::from([(String::from("c0"), 1000.0 - v0)]))?;
+
+            Ok(vec![v0, v1])
         },
-        50,
+        1000,
     )?;
 
-    let best_trial_number = get_best_trial(&study)?;
-    let trial = study.get_trials()?[best_trial_number as usize].clone();
-    println!("Best trial: {trial:?}");
     Ok(())
 }

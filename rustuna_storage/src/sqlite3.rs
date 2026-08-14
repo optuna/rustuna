@@ -1,4 +1,8 @@
 use crate::cache::{CachedStorageBackend, DiscardedTrialsDiff};
+use crate::constraints::{
+    constraints_from_json, constraints_to_map, constraints_to_values, OPTUNA_CONSTRAINTS_KEY,
+    RUSTUNA_CONSTRAINTS_KEY,
+};
 use rusqlite::{
     params, Connection, Error as RusqliteError, OptionalExtension, TransactionBehavior,
 };
@@ -612,6 +616,10 @@ impl CachedStorageBackend for SQLite3Storage {
             self.set_trial_intermediate_values(trial_id, template.intermediate_values.clone())?;
         }
 
+        if !template.constraints.is_empty() {
+            self.set_trial_constraints(trial_id, template.constraints.clone())?;
+        }
+
         if !matches!(template.state_values, TrialStateValues::Running) {
             self.set_trial_state_values(trial_id, template.state_values.clone())?;
         }
@@ -1081,6 +1089,9 @@ impl CachedStorageBackend for SQLite3Storage {
                     format!("Database query failed: {e}"),
                 )
             })?;
+        let mut optuna_constraints = None;
+        let mut rustuna_constraints = None;
+        let mut constraints = HashMap::new();
         for row in system_attr_rows {
             let (key, value) = row.map_err(|e| {
                 Error::with_reason(
@@ -1088,7 +1099,24 @@ impl CachedStorageBackend for SQLite3Storage {
                     format!("Database query failed: {e}"),
                 )
             })?;
-            attrs.insert(AttrKey::System(key.into()), value);
+            if key == OPTUNA_CONSTRAINTS_KEY {
+                optuna_constraints = Some(value);
+            } else if key == RUSTUNA_CONSTRAINTS_KEY {
+                rustuna_constraints = Some(value);
+            } else if let Some(name) = key.strip_prefix("constraints:") {
+                let value = value.parse::<f64>().map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::StorageError,
+                        format!("Failed to parse legacy constraint as f64: {e}"),
+                    )
+                })?;
+                constraints.insert(name.to_string(), value);
+            } else {
+                attrs.insert(AttrKey::System(key.into()), value);
+            }
+        }
+        if let Some(value) = rustuna_constraints.or(optuna_constraints) {
+            constraints = constraints_from_json(&value)?;
         }
 
         let intermediate_values = read_intermediate_values(&guard, trial_id)?;
@@ -1098,6 +1126,7 @@ impl CachedStorageBackend for SQLite3Storage {
         trial.internal_params = internal_params;
         trial.distributions = distributions;
         trial.intermediate_values = intermediate_values;
+        trial.constraints = constraints;
         trial.attrs = attrs;
         trial.datetime_start = datetime_start;
         trial.datetime_complete = datetime_complete;
@@ -1436,6 +1465,33 @@ impl CachedStorageBackend for SQLite3Storage {
         Ok(())
     }
 
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> Result<()> {
+        let optuna_constraints =
+            serde_json::to_string(&Value::Array(constraints_to_values(&constraints)))
+                .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        let rustuna_constraints =
+            serde_json::to_string(&Value::Object(constraints_to_map(&constraints)))
+                .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        self.set_trial_attrs(
+            trial_id,
+            HashMap::from([
+                (
+                    AttrKey::System(OPTUNA_CONSTRAINTS_KEY.into()),
+                    optuna_constraints,
+                ),
+                (
+                    AttrKey::System(RUSTUNA_CONSTRAINTS_KEY.into()),
+                    rustuna_constraints,
+                ),
+            ]),
+            false,
+        )
+    }
+
     fn get_trials_diff(
         &mut self,
         study_id: u32,
@@ -1628,6 +1684,9 @@ impl CachedStorageBackend for SQLite3Storage {
                         format!("Database query failed: {e}"),
                     )
                 })?;
+            let mut optuna_constraints = None;
+            let mut rustuna_constraints = None;
+            let mut constraints = HashMap::new();
             for row in system_attr_rows {
                 let (key, value) = row.map_err(|e| {
                     Error::with_reason(
@@ -1635,7 +1694,24 @@ impl CachedStorageBackend for SQLite3Storage {
                         format!("Database query failed: {e}"),
                     )
                 })?;
-                attrs.insert(AttrKey::System(key.into()), value);
+                if key == OPTUNA_CONSTRAINTS_KEY {
+                    optuna_constraints = Some(value);
+                } else if key == RUSTUNA_CONSTRAINTS_KEY {
+                    rustuna_constraints = Some(value);
+                } else if let Some(name) = key.strip_prefix("constraints:") {
+                    let value = value.parse::<f64>().map_err(|e| {
+                        Error::with_reason(
+                            ErrorKind::StorageError,
+                            format!("Failed to parse legacy constraint as f64: {e}"),
+                        )
+                    })?;
+                    constraints.insert(name.to_string(), value);
+                } else {
+                    attrs.insert(AttrKey::System(key.into()), value);
+                }
+            }
+            if let Some(value) = rustuna_constraints.or(optuna_constraints) {
+                constraints = constraints_from_json(&value)?;
             }
 
             let intermediate_values = read_intermediate_values(&guard, trial_id)?;
@@ -1645,6 +1721,7 @@ impl CachedStorageBackend for SQLite3Storage {
             trial.internal_params = internal_params;
             trial.distributions = distributions;
             trial.intermediate_values = intermediate_values;
+            trial.constraints = constraints;
             trial.attrs = attrs;
             trial.datetime_start = datetime_start;
             trial.datetime_complete = datetime_complete;
@@ -3033,6 +3110,39 @@ mod tests {
             .expect_err("Expected TrialNotFound error");
         assert!(matches!(err.kind, ErrorKind::TrialNotFound));
 
+        Ok(())
+    }
+
+    #[test]
+    fn set_trial_constraints_round_trips_named_values() -> Result<()> {
+        let mut storage = init_storage()?;
+        let study_id = storage
+            .create_new_study("example", vec![Direction::Minimize])?
+            .id;
+        let trial_id = storage.create_new_trial(study_id)?.id;
+        let constraints = HashMap::from([("c0".to_string(), 1.0), ("c1".to_string(), -1.0)]);
+
+        storage.set_trial_constraints(trial_id, constraints.clone())?;
+        let trial = storage.get_trial(trial_id)?;
+        assert_eq!(trial.constraints, constraints);
+        assert!(!trial
+            .attrs
+            .contains_key(&AttrKey::System(OPTUNA_CONSTRAINTS_KEY.into())));
+
+        let guard = storage
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::StorageError))?;
+        let value_json: String = guard
+            .query_row(
+                "SELECT value_json FROM trial_system_attributes WHERE trial_id = ? AND key = ?",
+                params![trial_id, OPTUNA_CONSTRAINTS_KEY],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        let value: Value = serde_json::from_str(&value_json)
+            .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        assert_eq!(value, json!([1.0, -1.0]));
         Ok(())
     }
 }

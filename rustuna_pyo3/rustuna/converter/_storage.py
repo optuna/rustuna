@@ -21,6 +21,8 @@ from ._direction import to_optuna_directions
 from ._distribution import to_optuna_distribution, to_rustuna_distribution
 from ._frozen_study import to_frozen_study, to_persisted_study
 from ._trial import (
+    _OPTUNA_CONSTRAINTS_KEY,
+    _RUSTUNA_CONSTRAINTS_KEY,
     FrozenTrialLike,
     to_frozen_trial,
     to_optuna_state,
@@ -87,6 +89,11 @@ class ToRustunaStorage:
         self, study_id: int, template_trial: rustuna.trial.PersistedTrial | None = None
     ) -> rustuna.trial.PersistedTrial:
         template_frozen = to_frozen_trial(template_trial) if template_trial else None
+        if template_frozen is not None and template_trial is not None:
+            if template_trial.constraints:
+                template_frozen.system_attrs[_RUSTUNA_CONSTRAINTS_KEY] = dict(
+                    template_trial.constraints
+                )
         trial_id = self._storage.create_new_trial(
             study_id, template_trial=template_frozen
         )
@@ -208,6 +215,19 @@ class ToRustunaStorage:
     def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None:
         for key, value in attrs.items():
             self._storage.set_trial_system_attr(trial_id, key, value)
+
+    def set_trial_constraints(
+        self, trial_id: int, constraints: dict[str, float]
+    ) -> None:
+        sorted_constraints = sorted(constraints.items())
+        self._storage.set_trial_system_attr(
+            trial_id,
+            _OPTUNA_CONSTRAINTS_KEY,
+            [value for _, value in sorted_constraints],
+        )
+        self._storage.set_trial_system_attr(
+            trial_id, _RUSTUNA_CONSTRAINTS_KEY, constraints
+        )
 
     def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None:
         for key, value in attrs.items():
@@ -404,6 +424,18 @@ class ToOptunaStorage(BaseStorage):
         self, trial_id: int, key: str, value: JSONSerializable
     ) -> None:
         try:
+            if key == _OPTUNA_CONSTRAINTS_KEY and isinstance(value, (list, tuple)):
+                self._storage.set_trial_constraints(
+                    trial_id,
+                    {str(index): float(v) for index, v in enumerate(value)},
+                )
+                return
+            if key == _RUSTUNA_CONSTRAINTS_KEY and isinstance(value, dict):
+                self._storage.set_trial_constraints(
+                    trial_id,
+                    {str(name): float(v) for name, v in value.items()},
+                )
+                return
             self._storage.set_trial_system_attrs(
                 trial_id, to_rustuna_attrs({key: value})
             )

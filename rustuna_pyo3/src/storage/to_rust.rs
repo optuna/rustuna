@@ -221,6 +221,18 @@ impl ToRustStorage {
         })
     }
 
+    fn obj_set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: &HashMap<String, f64>,
+    ) -> PyResult<()> {
+        Python::attach(|py| {
+            self.obj
+                .call_method1(py, "set_trial_constraints", (trial_id, constraints.clone()))?;
+            Ok(())
+        })
+    }
+
     fn obj_set_trial_attrs(&mut self, trial_id: u32, attrs: Attrs) -> PyResult<()> {
         Python::attach(|py| {
             let py_system_attrs = pyo3::types::PyDict::new(py);
@@ -369,6 +381,10 @@ impl ToRustStorage {
         }
         self.cache
             .set_trial_attrs(src_trial.id, src_trial.attrs, false)?;
+        if cache_trial.constraints != src_trial.constraints {
+            self.cache
+                .set_trial_constraints(src_trial.id, src_trial.constraints.clone())?;
+        }
 
         for (name, distribution) in src_trial.distributions {
             let internal_repr =
@@ -604,6 +620,29 @@ impl Storage for ToRustStorage {
                     self.sync_all_trials()?;
                     self.cache
                         .set_trial_intermediate_values(trial_id, intermediate_values_retry)?;
+                    Ok(())
+                }
+                _ => Err(e),
+            },
+        }
+    }
+
+    fn set_trial_constraints(
+        &mut self,
+        trial_id: u32,
+        constraints: HashMap<String, f64>,
+    ) -> rustuna_core::Result<()> {
+        let constraints_for_retry = constraints.clone();
+        self.obj_set_trial_constraints(trial_id, &constraints_for_retry)
+            .map_err(Self::map_pyerr)?;
+
+        match self.cache.set_trial_constraints(trial_id, constraints) {
+            Ok(_) => Ok(()),
+            Err(e) => match e.kind {
+                rustuna_core::ErrorKind::StudyNotFound | rustuna_core::ErrorKind::TrialNotFound => {
+                    self.sync_all_trials()?;
+                    self.cache
+                        .set_trial_constraints(trial_id, constraints_for_retry)?;
                     Ok(())
                 }
                 _ => Err(e),
