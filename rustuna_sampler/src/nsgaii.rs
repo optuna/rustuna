@@ -371,6 +371,24 @@ impl Sampler for NSGAIISampler {
     }
 }
 
+#[derive(Clone, Copy)]
+struct ConstraintMetrics {
+    is_feasible: bool,
+    violation: f64,
+}
+
+fn constraint_metrics(trial: &PersistedTrial) -> Result<Option<ConstraintMetrics>> {
+    let constraints = trial.constraints()?;
+    if constraints.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ConstraintMetrics {
+        is_feasible: constraints.values().all(|x| *x <= 0.0),
+        violation: constraints.values().filter(|&x| *x > 0.0).sum(),
+    }))
+}
+
 /// Return whether `trial0` constrained-dominates `trial1`.
 ///
 /// A trial x is said to constrained-dominate a trial y, if any of the following conditions is
@@ -381,37 +399,52 @@ impl Sampler for NSGAIISampler {
 /// 3) Trial x and y are feasible and trial x dominates trial y.
 ///
 fn constrained_dominates(
-    trial0: &PersistedTrial,
-    trial1: &PersistedTrial,
+    values0: &[f64],
+    constraints0: Option<ConstraintMetrics>,
+    values1: &[f64],
+    constraints1: Option<ConstraintMetrics>,
     directions: &[Direction],
-) -> Result<bool> {
-    let values0 = match &trial0.state_values {
-        TrialStateValues::Complete(values) => values,
-        _ => return Ok(false),
-    };
-    let values1 = match &trial1.state_values {
-        TrialStateValues::Complete(values) => values,
-        _ => return Ok(true),
-    };
+) -> bool {
+    let constraints0 = constraints0.unwrap_or(ConstraintMetrics {
+        is_feasible: true,
+        violation: 0.0,
+    });
+    let constraints1 = constraints1.unwrap_or(ConstraintMetrics {
+        is_feasible: true,
+        violation: 0.0,
+    });
 
-    let constraints0 = trial0.constraints()?;
-    let satisfy_constraints0 = constraints0.values().all(|x| *x <= 0.0);
-    let constraints1 = trial1.constraints()?;
-    let satisfy_constraints1 = constraints1.values().all(|x| *x <= 0.0);
-
-    if satisfy_constraints0 && satisfy_constraints1 {
-        return dominates(values0, values1, directions);
+    if constraints0.is_feasible && constraints1.is_feasible {
+        return dominates_prevalidated(values0, values1, directions);
     }
-    if satisfy_constraints0 {
-        return Ok(true);
+    if constraints0.is_feasible {
+        return true;
     }
-    if satisfy_constraints1 {
-        return Ok(false);
+    if constraints1.is_feasible {
+        return false;
     }
 
-    let violation0: f64 = constraints0.values().filter(|&x| *x > 0.0).sum();
-    let violation1: f64 = constraints1.values().filter(|&x| *x > 0.0).sum();
-    Ok(violation0 < violation1)
+    constraints0.violation < constraints1.violation
+}
+
+fn dominates_prevalidated(values0: &[f64], values1: &[f64], directions: &[Direction]) -> bool {
+    debug_assert_eq!(values0.len(), values1.len());
+    debug_assert_eq!(values0.len(), directions.len());
+    debug_assert!(!values0.iter().any(|x| x.is_nan()));
+    debug_assert!(!values1.iter().any(|x| x.is_nan()));
+
+    let mut equal = true;
+    for ((v0, v1), direction) in values0.iter().zip(values1).zip(directions) {
+        equal &= v0 == v1;
+        let values1_is_better = match direction {
+            Direction::Minimize => v0 > v1,
+            Direction::Maximize => v0 < v1,
+        };
+        if values1_is_better {
+            return false;
+        }
+    }
+    !equal
 }
 
 fn fast_non_dominated_sort(
@@ -421,32 +454,59 @@ fn fast_non_dominated_sort(
 ) -> Result<Vec<Vec<u32>>> {
     let n = population_numbers.len();
 
-    let population_trials = population_numbers
+    let population = population_numbers
         .iter()
         .map(|i| {
-            trials
+            let trial = trials
                 .get(*i as usize)
                 .and_then(|trial| trial.as_ref())
-                .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))
+                .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))?;
+            let TrialStateValues::Complete(values) = &trial.state_values else {
+                return Err(Error::new(ErrorKind::Unexpected));
+            };
+            // Validate each value vector once before the quadratic pairwise comparison.
+            dominates(values, values, &ctx.directions)?;
+            Ok((values.as_slice(), constraint_metrics(trial)?))
         })
         .collect::<Result<Vec<_>>>()?;
+    let has_constraints = population
+        .iter()
+        .any(|(_, constraints)| constraints.is_some());
 
     let mut dominated_count = vec![0u32; n];
     let mut dominates_list: Vec<Vec<usize>> = vec![vec![]; n];
 
-    for (i, _) in population_numbers.iter().enumerate() {
-        for (j, _) in population_numbers.iter().enumerate() {
-            if i >= j {
-                continue;
-            }
-            if constrained_dominates(population_trials[i], population_trials[j], &ctx.directions)? {
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let dominates_ij = if has_constraints {
+                constrained_dominates(
+                    population[i].0,
+                    population[i].1,
+                    population[j].0,
+                    population[j].1,
+                    &ctx.directions,
+                )
+            } else {
+                dominates_prevalidated(population[i].0, population[j].0, &ctx.directions)
+            };
+            if dominates_ij {
                 dominates_list[i].push(j);
                 dominated_count[j] += 1;
-            } else if constrained_dominates(
-                population_trials[j],
-                population_trials[i],
-                &ctx.directions,
-            )? {
+                continue;
+            }
+
+            let dominates_ji = if has_constraints {
+                constrained_dominates(
+                    population[j].0,
+                    population[j].1,
+                    population[i].0,
+                    population[i].1,
+                    &ctx.directions,
+                )
+            } else {
+                dominates_prevalidated(population[j].0, population[i].0, &ctx.directions)
+            };
+            if dominates_ji {
                 dominates_list[j].push(i);
                 dominated_count[i] += 1;
             }
@@ -678,6 +738,48 @@ mod tests {
             result.is_ok(),
             "Optimization with constraints should complete without panicking"
         );
+    }
+
+    #[test]
+    fn test_constrained_dominates() {
+        let directions = [Direction::Minimize, Direction::Minimize];
+        let small_violation = Some(ConstraintMetrics {
+            is_feasible: false,
+            violation: 1.0,
+        });
+        let large_violation = Some(ConstraintMetrics {
+            is_feasible: false,
+            violation: 2.0,
+        });
+
+        assert!(constrained_dominates(
+            &[1.0, 1.0],
+            None,
+            &[2.0, 2.0],
+            None,
+            &directions,
+        ));
+        assert!(constrained_dominates(
+            &[2.0, 2.0],
+            None,
+            &[1.0, 1.0],
+            small_violation,
+            &directions,
+        ));
+        assert!(constrained_dominates(
+            &[2.0, 2.0],
+            small_violation,
+            &[1.0, 1.0],
+            large_violation,
+            &directions,
+        ));
+        assert!(!constrained_dominates(
+            &[1.0, 1.0],
+            large_violation,
+            &[2.0, 2.0],
+            small_violation,
+            &directions,
+        ));
     }
 
     #[test]
