@@ -9,6 +9,7 @@ use pyo3::Py;
 use rustuna_core::sampler::Sampler;
 use rustuna_core::trial::TrialStateValues;
 use rustuna_sampler::nsgaii::NSGAIISampler;
+use rustuna_sampler::nsgaii::NsgaiiConfig;
 
 use crate::distribution::PyDistribution;
 use crate::sampler::{extract_storage, PySamplerContext};
@@ -31,21 +32,13 @@ impl PyNSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> PyResult<Self> {
-        let rs_sampler = match seed {
-            Some(seed) => NSGAIISampler::seed_from_u64(
-                seed,
-                population_size,
-                mutation_prob,
-                crossover_prob,
-                swapping_prob,
-            ),
-            None => NSGAIISampler::new(
-                population_size,
-                mutation_prob,
-                crossover_prob,
-                swapping_prob,
-            ),
-        };
+        let rs_sampler = NSGAIISampler::from_config(NsgaiiConfig {
+            seed,
+            population_size,
+            mutation_prob,
+            crossover_prob,
+            swapping_prob,
+        });
         Ok(PyNSGAIISampler {
             sampler: Arc::new(Mutex::new(rs_sampler)),
         })

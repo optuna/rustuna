@@ -66,11 +66,27 @@ pub struct NSGAIISampler {
 }
 impl Default for NSGAIISampler {
     fn default() -> Self {
-        Self::new(50, None, 0.9, 0.5)
+        Self::from_config(NsgaiiConfig::default())
     }
 }
 
 impl NSGAIISampler {
+    /// Creates a sampler from an explicit configuration.
+    pub fn from_config(cfg: NsgaiiConfig) -> NSGAIISampler {
+        let rng = match cfg.seed {
+            Some(seed) => StdRng::seed_from_u64(seed),
+            None => StdRng::from_seed(Default::default()),
+        };
+        NSGAIISampler {
+            rng,
+            population_size: cfg.population_size,
+            mutation_prob: cfg.mutation_prob,
+            crossover_prob: cfg.crossover_prob,
+            swapping_prob: cfg.swapping_prob,
+            generation_to_numbers: HashMap::new(),
+        }
+    }
+
     /// Creates an NSGA-II sampler.
     ///
     /// `population_size` is the number of individuals retained in each generation.
@@ -84,15 +100,15 @@ impl NSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> NSGAIISampler {
-        NSGAIISampler {
-            rng: StdRng::from_seed(Default::default()),
+        Self::from_config(NsgaiiConfig {
             population_size,
             mutation_prob,
             crossover_prob,
             swapping_prob,
-            generation_to_numbers: HashMap::new(),
-        }
+            seed: None,
+        })
     }
+
     /// Creates a reproducibly seeded NSGA-II sampler.
     ///
     /// This is equivalent to [`NSGAIISampler::new`] but initializes the internal random number
@@ -104,15 +120,15 @@ impl NSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> NSGAIISampler {
-        NSGAIISampler {
-            rng: StdRng::seed_from_u64(seed),
+        Self::from_config(NsgaiiConfig {
             population_size,
             mutation_prob,
             crossover_prob,
             swapping_prob,
-            generation_to_numbers: HashMap::new(),
-        }
+            seed: Some(seed),
+        })
     }
+
     fn rebuild_generation_cache(&mut self, trials: &[Option<PersistedTrial>]) {
         self.generation_to_numbers.clear();
         let generation_key = AttrKey::System("generation".into());
@@ -198,6 +214,33 @@ impl NSGAIISampler {
         child
     }
 }
+
+/// Configuration for [`NSGAIISampler`].
+pub struct NsgaiiConfig {
+    /// Number of individuals (trials) in a generation.
+    pub population_size: usize,
+    /// Per-parameter mutation probability. `None` uses the automatic default (`1 / n_params`).
+    pub mutation_prob: Option<f64>,
+    /// Probability of generating a child by crossover rather than cloning one parent.
+    pub crossover_prob: f64,
+    /// Probability of taking each parameter from the second parent during crossover.
+    pub swapping_prob: f64,
+    /// Optional RNG seed for reproducible sampling.
+    pub seed: Option<u64>,
+}
+
+impl Default for NsgaiiConfig {
+    fn default() -> Self {
+        Self {
+            population_size: 50,
+            mutation_prob: None,
+            crossover_prob: 0.9,
+            swapping_prob: 0.5,
+            seed: None,
+        }
+    }
+}
+
 impl Sampler for NSGAIISampler {
     fn sample_independent(
         &mut self,
