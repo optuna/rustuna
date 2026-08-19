@@ -1,0 +1,437 @@
+name: Build and publish Python distributions
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "python-v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MATURIN_VERSION: v1.14.1
+  UV_VERSION: 0.12.1
+  UV_EXCLUDE_NEWER: 5 days
+  PIP_VERSION: 26.1.2
+  TWINE_VERSION: 6.2.0
+  ABI3AUDIT_VERSION: 0.0.26
+  BUILD_ARGS: >-
+    --manifest-path rustuna_pyo3/Cargo.toml
+    --profile dist-release
+    --locked
+    --out dist
+    --compatibility pypi
+
+jobs:
+  check_version:
+    name: Check version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+      - name: Compare the tag with the workspace version
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          set -euo pipefail
+          version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["workspace"]["package"]["version"])')"
+          if [ "python-v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match the workspace version ${version}" >&2
+            exit 1
+          fi
+
+  build_manylinux:
+    name: ${{ matrix.platform }} ${{ matrix.variant }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux-x86_64
+          - linux-aarch64
+        variant:
+          - abi3
+          - abi3t
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64
+          - variant: abi3
+            python: "3.11"
+            artifact_suffix: cp311-abi3
+          - variant: abi3t
+            python: "3.15t"
+            artifact_suffix: cp315-abi3t
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: "2_28"
+          command: build
+          args: ${{ env.BUILD_ARGS }} -i python${{ matrix.python }}
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          # maturin-action v1.51.0 only puts /opt/python/cp37-cp312 on PATH, so the 3.15t
+          # interpreter of the image would not be found. maturin does not fail on a missing
+          # interpreter for abi3 builds -- it invents a placeholder -- so without this the abi3t
+          # wheel would silently be built without ever seeing a real 3.15t. This script runs in the
+          # same shell as the maturin invocation, right before it.
+          before-script-linux: |
+            for py_bin in /opt/python/*/bin; do
+              if [ -d "$py_bin" ]; then PATH="$PATH:$py_bin"; fi
+            done
+            export PATH
+      - name: Install uv and CPython ${{ matrix.python }}
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+          enable-cache: false
+      - name: Test wheel and bundled SQLite
+        # Resolving the `abi3t` tag requires uv 0.11.3 or later.
+        run: |
+          set -euxo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected exactly one wheel: ${wheels[*]}" >&2; exit 1; }
+          uv pip install --reinstall --no-deps "${wheels[0]}"
+          # On a free-threaded interpreter, importing rustuna must not make CPython fall back to a
+          # GIL-enabled runtime. No-op on GIL-enabled builds, so the abi3 and abi3t legs share it.
+          python -I -c 'import sys, sysconfig, rustuna; assert not sysconfig.get_config_var("Py_GIL_DISABLED") or not sys._is_gil_enabled(), "importing rustuna re-enabled the GIL"'
+          python -I -c 'import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.platform }}-${{ matrix.artifact_suffix }}
+          path: dist/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  build_musllinux:
+    # Only the cp311-abi3 wheel is built: a free-threaded CPython on musl only comes from uv or a
+    # manual build, so an abi3t musllinux wheel would serve almost nobody and could not be tested
+    # on Alpine either.
+    name: ${{ matrix.platform }} abi3
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: musllinux-x86_64
+            runner: ubuntu-24.04
+            target: x86_64
+          - platform: musllinux-aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: musllinux_1_2
+          command: build
+          # The musl container (rust-musl-cross) ships no CPython 3.11, but an abi3 build does not
+          # need a matching interpreter -- maturin falls back to a placeholder. The wheel it
+          # produces is checked and installed below.
+          args: ${{ env.BUILD_ARGS }} -i python3.11
+          maturin-version: ${{ env.MATURIN_VERSION }}
+      - name: Check wheel tag
+        run: |
+          set -euxo pipefail
+          # nullglob, so that a pattern matching nothing yields an empty array instead of the
+          # pattern itself -- otherwise this check passes when the wheel is tagged `linux_*`.
+          shopt -s nullglob
+          wheels=(dist/*-musllinux_1_2_*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected exactly one musllinux_1_2 wheel, got: $(ls dist)" >&2; exit 1; }
+      - name: Test wheel and bundled SQLite on Alpine
+        run: |
+          set -euxo pipefail
+          docker run --rm --volume "$PWD/dist:/wheels:ro" --workdir /tmp alpine:3.22.2 sh -euxc '
+            apk add --no-cache python3 py3-pip &&
+            python3 -m venv /tmp/venv &&
+            /tmp/venv/bin/pip install --no-index --no-deps /wheels/*.whl &&
+            /tmp/venv/bin/python -I -c "import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f\"{workdir.name}/rustuna.db\")"
+          '
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.platform }}-cp311-abi3
+          path: dist/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  build_native:
+    name: ${{ matrix.platform }} ${{ matrix.variant }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - macos-x86_64
+          - macos-arm64
+          - windows-x86_64
+          - windows-arm64
+        variant:
+          - abi3
+          - abi3t
+        include:
+          - platform: macos-x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            architecture: x64
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            architecture: arm64
+          - platform: windows-x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            architecture: x64
+          - platform: windows-arm64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            architecture: arm64
+          - variant: abi3
+            python: "3.11"
+            artifact_suffix: cp311-abi3
+          - variant: abi3t
+            python: "3.15t"
+            artifact_suffix: cp315-abi3t
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # setup-python selects the requested CPU architecture explicitly, so maturin and the smoke
+      # test use the same native interpreter on macOS and Windows, including ARM64.
+      - name: Install CPython ${{ matrix.python }}
+        id: setup-python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.architecture }}
+          allow-prereleases: true
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          command: build
+          args: ${{ env.BUILD_ARGS }} -i ${{ steps.setup-python.outputs.python-path }}
+          maturin-version: ${{ env.MATURIN_VERSION }}
+      - name: Test wheel and bundled SQLite
+        env:
+          PYTHON_PATH: ${{ steps.setup-python.outputs.python-path }}
+        run: |
+          set -euxo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected exactly one wheel: ${wheels[*]}" >&2; exit 1; }
+          "$PYTHON_PATH" -m pip install "pip==$PIP_VERSION"
+          "$PYTHON_PATH" -m pip install --no-deps "${wheels[0]}"
+          # On a free-threaded interpreter, importing rustuna must not make CPython fall back to a
+          # GIL-enabled runtime. No-op on GIL-enabled builds, so the abi3 and abi3t legs share it.
+          "$PYTHON_PATH" -I -c 'import sys, sysconfig, tempfile, rustuna; assert not sysconfig.get_config_var("Py_GIL_DISABLED") or not sys._is_gil_enabled(), "importing rustuna re-enabled the GIL"; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheel-${{ matrix.platform }}-${{ matrix.artifact_suffix }}
+          path: dist/*.whl
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  test_abi3_compatibility:
+    name: Test ${{ matrix.platform }} abi3 on CPython ${{ matrix.python }}
+    needs: build_manylinux
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - linux-x86_64
+          - linux-aarch64
+        python:
+          - "3.12"
+          - "3.13"
+          - "3.14"
+          - "3.15"
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wheel-${{ matrix.platform }}-cp311-abi3
+          path: dist
+      - name: Install uv and CPython ${{ matrix.python }}
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ matrix.python }}
+          activate-environment: true
+          enable-cache: false
+      - name: Test abi3 wheel and bundled SQLite
+        run: |
+          set -euxo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          [ "${#wheels[@]}" -eq 1 ] || { echo "expected exactly one wheel: ${wheels[*]}" >&2; exit 1; }
+          uv pip install --reinstall --no-deps "${wheels[0]}"
+          python -I -c 'import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
+
+  build_sdist:
+    name: Source distribution
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build source distribution
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: >-
+            --manifest-path rustuna_pyo3/Cargo.toml
+            --out dist
+          maturin-version: ${{ env.MATURIN_VERSION }}
+      - name: Show source distribution contents
+        # rustuna_pyo3 is a workspace member with path dependencies, so make sure the sibling
+        # crates and the workspace manifest actually made it into the archive.
+        run: tar tzf dist/*.tar.gz
+      - name: Install uv and CPython 3.13
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+          enable-cache: false
+      - name: Test source distribution
+        # The ubuntu runner image ships a Rust toolchain, so this compiles the extension from
+        # source exactly like a user without a matching wheel would.
+        run: |
+          set -euxo pipefail
+          uv run --isolated --no-project --with dist/*.tar.gz \
+            python -I -c 'import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
+      - name: Upload source distribution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    name: Verify distributions
+    needs:
+      - build_manylinux
+      - build_musllinux
+      - build_native
+      - test_abi3_compatibility
+      - build_sdist
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sdist
+          path: dist
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: "3.13"
+          activate-environment: true
+          enable-cache: false
+      - name: List distributions
+        run: ls -l dist
+      - name: Check platform tags
+        # A wheel tagged `linux_*` instead of `manylinux_*` / `musllinux_*` is rejected by PyPI and
+        # means the build escaped its container.
+        run: |
+          set -euo pipefail
+          if compgen -G "dist/*-linux_*.whl" > /dev/null; then
+            echo "some wheels fell back to the plain linux platform tag:" >&2
+            ls dist/*-linux_*.whl >&2
+            exit 1
+          fi
+      - name: Check package metadata
+        run: uvx --from "twine==$TWINE_VERSION" twine check dist/*
+      - name: Audit the abi3 wheels
+        # Verify that the stable ABI wheels really only use the limited API. abi3audit does not
+        # know the `abi3t` tag yet, so only the cp311-abi3 wheels are checked.
+        run: >-
+          uvx --from "abi3audit==$ABI3AUDIT_VERSION"
+          abi3audit --strict --verbose dist/*-cp311-abi3-*.whl
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    # Only a `python-v*` tag can publish; `workflow_dispatch` runs stop after `verify`.
+    if: >-
+      ${{
+        github.repository == 'optuna/rustuna' &&
+        github.event_name == 'push' &&
+        github.ref_type == 'tag' &&
+        startsWith(github.ref, 'refs/tags/python-v')
+      }}
+    needs:
+      - check_version
+      - verify
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/rustuna
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          skip-existing: true
+          verbose: true
