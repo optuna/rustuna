@@ -13,7 +13,7 @@ name = "rustuna"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.29", features = ["extension-module"] }
+pyo3 = { version = "0.29", features = ["abi3-py311", "abi3t-py315", "extension-module"] }
 rustuna_core = { workspace = true }
 rustuna_sampler = { workspace = true }
 rustuna_storage = { workspace = true }
