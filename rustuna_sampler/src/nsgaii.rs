@@ -133,7 +133,7 @@ impl NSGAIISampler {
         })
     }
     fn get_generation_to_numbers_write_lock(
-        &mut self,
+        &self,
     ) -> Result<RwLockWriteGuard<'_, HashMap<u32, Vec<u32>>>> {
         self.generation_to_numbers.write().map_err(|e| {
             Error::with_reason(
@@ -142,7 +142,7 @@ impl NSGAIISampler {
             )
         })
     }
-    fn rebuild_generation_cache(&mut self, trials: &[Option<PersistedTrial>]) -> Result<()> {
+    fn rebuild_generation_cache(&self, trials: &[Option<PersistedTrial>]) -> Result<()> {
         let mut generation_to_numbers = self.get_generation_to_numbers_write_lock()?;
         generation_to_numbers.clear();
         let generation_key = AttrKey::System("generation".into());
@@ -162,7 +162,7 @@ impl NSGAIISampler {
         Ok(())
     }
     fn select_elite_population_numbers(
-        &mut self,
+        &self,
         ctx: &Context,
         trials: &[Option<PersistedTrial>],
         population_numbers: &[u32],
@@ -184,7 +184,7 @@ impl NSGAIISampler {
         Ok(elite_population_numbers)
     }
     fn get_parent_population_numbers(
-        &mut self,
+        &self,
         ctx: &Context,
         trials: &[Option<PersistedTrial>],
     ) -> Result<(i32, Vec<u32>)> {
@@ -211,7 +211,7 @@ impl NSGAIISampler {
         Ok((parent_generation, parent_population_numbers))
     }
     fn crossover(
-        &mut self,
+        &self,
         parent0: &HashMap<String, f64>,
         parent1: &HashMap<String, f64>,
         sorted_names: &[&str],
@@ -232,7 +232,7 @@ impl NSGAIISampler {
 }
 impl Sampler for NSGAIISampler {
     fn sample_independent(
-        &mut self,
+        &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _name: &str,
@@ -311,7 +311,7 @@ impl Sampler for NSGAIISampler {
     }
 
     fn sample_joint(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
@@ -383,7 +383,7 @@ impl Sampler for NSGAIISampler {
     }
 
     fn after_trial(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         state_values: &TrialStateValues,

@@ -5,7 +5,7 @@ use pyo3::{PyTypeInfo, Python};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use rustuna_core::ErrorKind;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use rustuna_core::attr::AttrKey;
 use rustuna_core::sampler::Sampler;
@@ -36,7 +36,7 @@ use crate::trial_queue::sqlite3::PySQLite3TrialQueue;
 use crate::trial_queue::to_rust::ToRustTrialQueue;
 
 type SharedStorage = Arc<RwLock<dyn Storage>>;
-type SharedSampler = Arc<Mutex<dyn Sampler>>;
+type SharedSampler = Arc<dyn Sampler>;
 type SharedTrialQueue = Arc<RwLock<dyn rustuna_core::trial_queue::TrialQueue>>;
 
 mod py_exceptions {
@@ -207,7 +207,7 @@ fn resolve_sampler_pyobj(
     } else if let Ok(py_random_sampler) = sampler_ref.extract::<PyRandomSampler>() {
         Ok((py_random_sampler.sampler.clone(), sampler_pyobj))
     } else {
-        let sampler: SharedSampler = Arc::new(Mutex::new(ToRustSampler::new(sampler)));
+        let sampler: SharedSampler = Arc::new(ToRustSampler::new(sampler));
         Ok((sampler, sampler_pyobj))
     }
 }
@@ -220,7 +220,7 @@ fn into_sampler_pyobj(
     match sampler {
         Some(sampler) => resolve_sampler_pyobj(py, sampler),
         None => {
-            let sampler = Arc::new(Mutex::new(TpeSampler::new()));
+            let sampler = Arc::new(TpeSampler::new());
             let py_sampler = PyTpeSampler {
                 sampler: sampler.clone(),
             };

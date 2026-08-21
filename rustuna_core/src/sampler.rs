@@ -34,14 +34,17 @@ pub struct Context {
 /// at the beginning of a trial with the inferred joint search space. Parameters not returned from
 /// that method, or all parameters when joint sampling is disabled, fall back to
 /// [`Sampler::sample_independent`].
-pub trait Sampler: Send {
+///
+/// A sampler can be shared by multiple optimization threads. Implementations must synchronize
+/// mutable state internally and keep immutable sampling work outside critical sections.
+pub trait Sampler: Send + Sync {
     /// Samples a single parameter independently.
     ///
     /// This method is used for parameters that are not covered by joint sampling. It is suitable
     /// for samplers such as random search or univariate TPE that decide each parameter
     /// separately.
     fn sample_independent(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         name: &str,
@@ -57,7 +60,7 @@ pub trait Sampler: Send {
     /// This is the Rustuna counterpart of Optuna's `sample_relative`. The input search space is
     /// inferred from previously observed compatible parameters in the study.
     fn sample_joint(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
@@ -67,7 +70,7 @@ pub trait Sampler: Send {
     /// This corresponds to Optuna's `after_trial` hook. Rustuna calls it after the objective
     /// function returns and before the finalized state is written to storage.
     fn after_trial(
-        &mut self,
+        &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _state_values: &TrialStateValues,
@@ -161,7 +164,7 @@ fn sample_int_with_step(rng: &mut StdRng, low: i64, high: i64, step: i64, log: b
 
 impl Sampler for RandomSampler {
     fn sample_independent(
-        &mut self,
+        &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _name: &str,
@@ -178,7 +181,6 @@ impl Sampler for RandomSampler {
                 format!("Failed to acquire RNG guard: {e}"),
             )
         })?;
-
         match distribution {
             Distribution::Float {
                 low,
@@ -210,7 +212,7 @@ impl Sampler for RandomSampler {
     }
 
     fn sample_joint(
-        &mut self,
+        &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _search_space: &HashMap<String, Distribution>,
@@ -219,7 +221,7 @@ impl Sampler for RandomSampler {
     }
 
     fn after_trial(
-        &mut self,
+        &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _state_values: &TrialStateValues,
@@ -231,6 +233,7 @@ impl Sampler for RandomSampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
 
     use crate::storage::InMemoryStorage;
     use crate::study::create_study;
@@ -241,7 +244,7 @@ mod tests {
     }
     impl Sampler for DummyJointSampler {
         fn sample_independent(
-            &mut self,
+            &self,
             _ctx: &Context,
             _storage: Arc<RwLock<dyn Storage>>,
             _name: &str,
@@ -255,7 +258,7 @@ mod tests {
         }
 
         fn sample_joint(
-            &mut self,
+            &self,
             _ctx: &Context,
             _storage: Arc<RwLock<dyn Storage>>,
             _search_space: &HashMap<String, Distribution>,
@@ -264,7 +267,7 @@ mod tests {
         }
 
         fn after_trial(
-            &mut self,
+            &self,
             _ctx: &Context,
             _storage: Arc<RwLock<dyn Storage>>,
             _state_values: &TrialStateValues,
@@ -277,6 +280,43 @@ mod tests {
         let x = t.suggest_float("x", -10.0, 10.0)?;
         let y = t.suggest_float("y", -10.0, 10.0)?;
         Ok(vec![x * x + y * y])
+    }
+
+    #[test]
+    fn random_sampler_can_be_shared_between_threads() -> Result<()> {
+        let sampler: Arc<dyn Sampler> = Arc::new(RandomSampler::seed_from_u64(0));
+        let storage: Arc<RwLock<dyn Storage>> = Arc::new(RwLock::new(InMemoryStorage::new()));
+        let distribution = Distribution::new_float(-1.0, 1.0, None, false);
+        let mut handles = Vec::new();
+
+        for thread_id in 0..4 {
+            let sampler = Arc::clone(&sampler);
+            let storage = Arc::clone(&storage);
+            let distribution = distribution.clone();
+            handles.push(thread::spawn(move || -> Result<()> {
+                for trial_number in 0..100 {
+                    let ctx = Context {
+                        study_id: 0,
+                        directions: vec![Direction::Minimize],
+                        trial_number,
+                        trial_id: thread_id * 100 + trial_number,
+                    };
+                    let value = sampler.sample_independent(
+                        &ctx,
+                        Arc::clone(&storage),
+                        "x",
+                        &distribution,
+                    )?;
+                    assert!((-1.0..1.0).contains(&value));
+                }
+                Ok(())
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("sampling thread must not panic")?;
+        }
+        Ok(())
     }
 
     #[test]

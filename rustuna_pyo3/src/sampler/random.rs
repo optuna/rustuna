@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -14,7 +14,7 @@ use crate::trial::PyTrialState;
 #[pyclass(name = "RandomSampler", from_py_object)]
 #[pyo3(module = "rustuna")]
 pub struct PyRandomSampler {
-    pub sampler: Arc<Mutex<RandomSampler>>,
+    pub sampler: Arc<RandomSampler>,
 }
 #[pymethods]
 impl PyRandomSampler {
@@ -26,7 +26,7 @@ impl PyRandomSampler {
             None => RandomSampler::new(),
         };
         Self {
-            sampler: Arc::new(Mutex::new(random_sampler)),
+            sampler: Arc::new(random_sampler),
         }
     }
 
@@ -49,10 +49,6 @@ impl PyRandomSampler {
         let distribution = distribution.distribution.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_independent(&context, arc_storage, &name, &distribution)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to sample independent: {e:?}"))

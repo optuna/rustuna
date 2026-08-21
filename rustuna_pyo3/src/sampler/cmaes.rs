@@ -26,8 +26,7 @@ use crate::trial::PyTrialState;
 /// configuration is asked, so no bookkeeping is required when a trial finishes.
 pub struct CmaEsSampler {
     state: Mutex<CmaEsSamplerState>,
-    // TODO(c-bata): Remove this mutex after RandomSampler becomes internally synchronized.
-    random_sampler: Mutex<RandomSampler>,
+    random_sampler: RandomSampler,
 }
 
 struct CmaEsSamplerState {
@@ -228,27 +227,20 @@ impl CmaEsSampler {
         };
         Self {
             state: Mutex::new(CmaEsSamplerState::new(seed, popsize)),
-            random_sampler: Mutex::new(random_sampler),
+            random_sampler,
         }
     }
 }
 
 impl Sampler for CmaEsSampler {
     fn sample_independent(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         name: &str,
         distribution: &Distribution,
     ) -> Result<f64> {
         self.random_sampler
-            .lock()
-            .map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::SamplerError,
-                    format!("Failed to acquire random sampler guard: {e}"),
-                )
-            })?
             .sample_independent(ctx, storage, name, distribution)
     }
 
@@ -257,7 +249,7 @@ impl Sampler for CmaEsSampler {
     }
 
     fn sample_joint(
-        &mut self,
+        &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
@@ -289,10 +281,10 @@ impl Sampler for CmaEsSampler {
 #[pyclass(name = "CmaEsSampler", from_py_object)]
 #[pyo3(module = "rustuna")]
 pub struct PyCmaEsSampler {
-    pub sampler: Arc<Mutex<dyn Sampler>>,
+    pub sampler: Arc<CmaEsSampler>,
 }
 
-// These methods release the GIL before acquiring the sampler mutex because
+// These methods release the GIL before acquiring the sampler's internal mutex because
 // `CmaEsSampler` re-attaches to Python internally. Acquiring the mutex while holding the GIL
 // could deadlock with another thread that holds the mutex and waits for the GIL.
 #[pymethods]
@@ -301,7 +293,7 @@ impl PyCmaEsSampler {
     #[pyo3(signature = (*, seed = None, popsize = None))]
     fn py_new(seed: Option<u64>, popsize: Option<usize>) -> Self {
         PyCmaEsSampler {
-            sampler: Arc::new(Mutex::new(CmaEsSampler::new(seed, popsize))),
+            sampler: Arc::new(CmaEsSampler::new(seed, popsize)),
         }
     }
 
@@ -324,10 +316,6 @@ impl PyCmaEsSampler {
         let distribution = distribution.distribution.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_independent(&context, arc_storage, &name, &distribution)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to sample independent: {e:?}"))
@@ -350,10 +338,6 @@ impl PyCmaEsSampler {
             .collect();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .sample_joint(&context, arc_storage, &search_space)
                 .map_err(err_to_exceptions)
         })
@@ -381,10 +365,6 @@ impl PyCmaEsSampler {
         let context = ctx.context.clone();
         py.detach(|| {
             self.sampler
-                .lock()
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the sampler guard: {e}"))
-                })?
                 .after_trial(&context, arc_storage, &state_values)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to call after_trial: {e:?}")))
         })
