@@ -389,42 +389,54 @@ impl PyStudy {
         })
     }
 
+    /// The optimize loop. ask/tell take the storage write lock and sampler
+    /// mutex inside rustuna_core: they run detached (see the comment on
+    /// `PyTrial::suggest_float`), which also lets other Python threads —
+    /// including concurrent optimize calls on this study — make progress
+    /// while a trial is being sampled or stored. Only the objective call,
+    /// its result conversion, and the exception classification run attached.
     #[pyo3(signature = (objective, n_trials, catch = None))]
     pub fn optimize(
         &self,
+        py: Python<'_>,
         objective: Py<PyAny>,
         n_trials: usize,
         catch: Option<Py<PyAny>>,
     ) -> PyResult<()> {
-        let catch = Python::attach(|py| normalize_catch(py, catch.as_ref().map(|c| c.bind(py))))?;
+        let catch = normalize_catch(py, catch.as_ref().map(|c| c.bind(py)))?;
         for _ in 0..n_trials {
-            let rs_trial = self.study.ask().map_err(err_to_exceptions)?;
+            let rs_trial = py.detach(|| self.study.ask()).map_err(err_to_exceptions)?;
             let trial_number = rs_trial.number;
 
-            let result: PyResult<Vec<f64>> = Python::attach(|py| {
+            let result: PyResult<Vec<f64>> = {
                 let trial = PyTrial::new(rs_trial, self.storage_pyobj.clone_ref(py));
-                let val = objective.call1(py, (trial,))?;
-                objective_result_to_values(val.bind(py).clone())
-            });
+                objective
+                    .call1(py, (trial,))
+                    .and_then(|val| objective_result_to_values(val.bind(py).clone()))
+            };
 
             match result {
                 Ok(val) => {
-                    self.study
-                        .tell(trial_number, TrialStateValues::Complete(val))
-                        .map_err(|e| PyRuntimeError::new_err(format!("Failed to tell: {e:?}")))?;
+                    py.detach(|| {
+                        self.study
+                            .tell(trial_number, TrialStateValues::Complete(val))
+                    })
+                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to tell: {e:?}")))?;
                 }
                 Err(e) => {
-                    let (state, should_reraise) = Python::attach(|py| -> PyResult<_> {
+                    let (state, should_reraise) =
                         if e.matches(py, py_exceptions::TrialPruned::type_object(py))? {
-                            Ok((TrialStateValues::Pruned, false))
+                            (TrialStateValues::Pruned, false)
                         } else {
-                            let should_reraise = !matches_any_exception(py, &e, &catch)?;
-                            Ok((TrialStateValues::Fail, should_reraise))
-                        }
-                    })?;
-                    self.study.tell(trial_number, state).map_err(|err| {
-                        PyRuntimeError::new_err(format!("Failed to tell: {err:?}"))
-                    })?;
+                            (
+                                TrialStateValues::Fail,
+                                !matches_any_exception(py, &e, &catch)?,
+                            )
+                        };
+                    py.detach(|| self.study.tell(trial_number, state))
+                        .map_err(|err| {
+                            PyRuntimeError::new_err(format!("Failed to tell: {err:?}"))
+                        })?;
                     if should_reraise {
                         return Err(e);
                     }
@@ -434,15 +446,17 @@ impl PyStudy {
         Ok(())
     }
 
-    pub fn ask(&self) -> PyResult<PyTrial> {
-        let trial = self.study.ask().map_err(err_to_exceptions)?;
-        let trial = Python::attach(|py| PyTrial::new(trial, self.storage_pyobj.clone_ref(py)));
-        Ok(trial)
+    pub fn ask(&self, py: Python<'_>) -> PyResult<PyTrial> {
+        // ask takes the storage/sampler locks inside rustuna_core: run it
+        // detached (see the comment on `PyTrial::suggest_float`).
+        let trial = py.detach(|| self.study.ask()).map_err(err_to_exceptions)?;
+        Ok(PyTrial::new(trial, self.storage_pyobj.clone_ref(py)))
     }
 
     #[pyo3(signature = (number, values = None, state = None))]
     pub fn tell(
         &self,
+        py: Python<'_>,
         number: u32,
         values: Option<Py<PyAny>>,
         state: Option<PyTrialState>,
@@ -462,32 +476,37 @@ impl PyStudy {
             (Some(PyTrialState::COMPLETE), None) => Err(PyValueError::new_err(
                 "values must be specified when state is COMPLETE",
             )),
-            (Some(PyTrialState::COMPLETE), Some(values)) => Python::attach(|py| {
+            (Some(PyTrialState::COMPLETE), Some(values)) => {
                 objective_result_to_values(values.bind(py).clone()).map(TrialStateValues::Complete)
-            }),
-            (None, Some(values)) => Python::attach(|py| {
+            }
+            (None, Some(values)) => {
                 objective_result_to_values(values.bind(py).clone()).map(TrialStateValues::Complete)
-            }),
+            }
         };
-        self.study
-            .tell(number, state_values?)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to tell: {e:?}")))?;
+        let state_values = state_values?;
+        // tell and the trial fetch below take the storage lock: run them
+        // detached (see the comment on `PyTrial::suggest_float`).
+        py.detach(|| {
+            self.study
+                .tell(number, state_values)
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to tell: {e:?}")))?;
 
-        let mut guard = self.study.storage.write().map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
-        })?;
-        let trial_id = guard
-            .get_trial_id_from_study_id_trial_number(self.study.id, number)
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("Failed to get trial id: {:?}", e.kind))
+            let mut guard = self.study.storage.write().map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
             })?;
-        let trial = guard
-            .get_trial(trial_id)
-            .map_err(|e| PyRuntimeError::new_err(format!("Failed to get trial: {:?}", e.kind)))?;
-        Ok(PyPersistedTrial::from_storage(
-            self.study.storage.clone(),
-            trial,
-        ))
+            let trial_id = guard
+                .get_trial_id_from_study_id_trial_number(self.study.id, number)
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to get trial id: {:?}", e.kind))
+                })?;
+            let trial = guard.get_trial(trial_id).map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to get trial: {:?}", e.kind))
+            })?;
+            Ok(PyPersistedTrial::from_storage(
+                self.study.storage.clone(),
+                trial,
+            ))
+        })
     }
 
     #[pyo3(signature = (params, user_attrs = None))]
