@@ -282,9 +282,20 @@ impl PyTrial {
     pub fn storage<'py>(&self, py: Python<'py>) -> Py<PyAny> {
         self.storage_pyobj.clone_ref(py)
     }
+    // suggest_* runs its Rust work detached (GIL released), which upholds the
+    // rule shared with ask/tell/optimize in study.rs: never wait for the
+    // sampler mutex / storage rwlock while holding the GIL. The rule is
+    // needed because the ToRust* adapters for Python-backed samplers/storages
+    // hold these locks while (re)attaching — one half of a GIL <-> lock
+    // deadlock cycle. The cycle closes only if another thread holds the GIL
+    // while waiting for the same lock, and that is the half this rule
+    // eliminates. Detaching also lets other Python threads run while the
+    // sampler computes. Keep this unconditional: an attached fast path for
+    // Python-backed components reintroduces the deadlock.
     #[pyo3(signature = (name, low, high, step=None, log=false))]
     pub fn suggest_float(
         &mut self,
+        py: Python<'_>,
         name: &str,
         low: f64,
         high: f64,
@@ -292,17 +303,20 @@ impl PyTrial {
         log: bool,
     ) -> PyResult<f64> {
         let dist = Distribution::new_float(low, high, step, log);
-        let value = self.trial.suggest(name, &dist).map_err(|e| match e.kind {
-            rustuna_core::ErrorKind::UnsupportedMultiObjective => PyRuntimeError::new_err(
-                "The TPE sampler of rustuna currently only supports single objective study.",
-            ),
-            _ => PyRuntimeError::new_err(format!("Failed to suggest float: {e:?}")),
-        })?;
+        let value = py
+            .detach(|| self.trial.suggest(name, &dist))
+            .map_err(|e| match e.kind {
+                rustuna_core::ErrorKind::UnsupportedMultiObjective => PyRuntimeError::new_err(
+                    "The TPE sampler of rustuna currently only supports single objective study.",
+                ),
+                _ => PyRuntimeError::new_err(format!("Failed to suggest float: {e:?}")),
+            })?;
         Ok(value)
     }
     #[pyo3(signature = (name, low, high, step=1, log=false))]
     pub fn suggest_int(
         &mut self,
+        py: Python<'_>,
         name: &str,
         low: i64,
         high: i64,
@@ -310,33 +324,37 @@ impl PyTrial {
         log: bool,
     ) -> PyResult<i64> {
         let dist = Distribution::new_int(low, high, step, log);
-        let value = self.trial.suggest(name, &dist).map_err(|e| match e.kind {
-            rustuna_core::ErrorKind::UnsupportedMultiObjective => PyRuntimeError::new_err(
-                "The TPE sampler of rustuna currently only supports single objective study.",
-            ),
-            _ => PyRuntimeError::new_err(format!("Failed to suggest int: {e:?}")),
-        })?;
+        let value = py
+            .detach(|| self.trial.suggest(name, &dist))
+            .map_err(|e| match e.kind {
+                rustuna_core::ErrorKind::UnsupportedMultiObjective => PyRuntimeError::new_err(
+                    "The TPE sampler of rustuna currently only supports single objective study.",
+                ),
+                _ => PyRuntimeError::new_err(format!("Failed to suggest int: {e:?}")),
+            })?;
         Ok(value as i64)
     }
     #[pyo3(signature = (name, choices))]
     pub fn suggest_categorical(
         &mut self,
+        py: Python<'_>,
         name: &str,
         choices: Vec<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
+        // Only the Python choice <-> Rust label conversions run attached;
+        // the sampling itself runs detached (see suggest_float above).
         let mut category_labels: Vec<CategoryLabel> = Vec::with_capacity(choices.len());
-        let category_labels = Python::attach(|py| {
-            for choice in choices {
-                match pyobject_to_category_label(choice.bind(py)) {
-                    Ok(label) => category_labels.push(label),
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(category_labels)
-        })?;
-        let label = self
-            .trial
-            .suggest_categorical_enum(name, &category_labels)
+        for choice in choices {
+            category_labels.push(pyobject_to_category_label(choice.bind(py))?);
+        }
+        let label = py
+            .detach(|| {
+                // Return an owned label: no borrow of `self` escapes the
+                // detach closure.
+                self.trial
+                    .suggest_categorical_enum(name, &category_labels)
+                    .cloned()
+            })
             .map_err(|e| match e.kind {
                 rustuna_core::ErrorKind::UnsupportedMultiObjective => PyRuntimeError::new_err(
                     "The TPE sampler of rustuna currently only supports single objective study.",
@@ -344,7 +362,7 @@ impl PyTrial {
                 _ => PyRuntimeError::new_err(format!("Failed to suggest categorical: {e:?}")),
             })?;
 
-        Python::attach(|py| category_label_to_pyobject(py, label).map(|b| b.unbind()))
+        category_label_to_pyobject(py, &label).map(|b| b.unbind())
     }
     #[pyo3(signature = (key, value))]
     pub fn set_user_attr(&mut self, key: &str, value: String) -> PyResult<()> {
