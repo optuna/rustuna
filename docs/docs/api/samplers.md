@@ -10,4 +10,6 @@
 
 ::: rustuna.samplers.CmaEsSampler
 
+::: rustuna.samplers.QMCSampler
+
 ::: rustuna.samplers.SamplerContext

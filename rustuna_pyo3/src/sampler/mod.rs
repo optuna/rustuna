@@ -14,6 +14,7 @@ use crate::storage::to_rust::PyToRustStorage;
 pub mod cmaes;
 mod context;
 pub mod nsgaii;
+pub mod qmc;
 pub mod random;
 pub mod to_rust;
 pub mod tpe;

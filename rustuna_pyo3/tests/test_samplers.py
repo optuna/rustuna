@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from scipy.stats import qmc as scipy_qmc  # type: ignore[import-untyped]
 
 import rustuna
 
@@ -187,3 +188,23 @@ def test_custom_sampler_after_trial_failure_still_persists_trial() -> None:
     persisted = study.trials[0]
     assert persisted.state == rustuna.trial.TrialState.COMPLETE
     assert persisted.values == [1.0]
+
+
+@pytest.mark.parametrize("dimension", [1, 2, 3, 10, 40])
+def test_qmc_sampler_reproduces_the_scipy_sobol_sequence(dimension: int) -> None:
+    # Optuna's QMCSampler draws its points from scipy.stats.qmc.Sobol, so matching SciPy is what
+    # makes the two samplers comparable. Names are zero-padded because Rustuna assigns Sobol'
+    # dimensions in sorted parameter order.
+    names = [f"p{i:03d}" for i in range(dimension)]
+
+    def objective(trial: rustuna.Trial) -> float:
+        # Suggesting over [0, 1] makes the parameter value the raw sequence coordinate.
+        return sum(trial.suggest_float(name, 0.0, 1.0) for name in names)
+
+    study = rustuna.create_study(sampler=rustuna.samplers.QMCSampler())
+    study.optimize(objective, n_trials=17)
+
+    # The first trial has no joint search space yet and falls back to independent sampling.
+    expected = scipy_qmc.Sobol(d=dimension, scramble=False).random(16)
+    sampled = [[trial.params[name] for name in names] for trial in study.trials[1:]]
+    assert sampled == pytest.approx(expected)

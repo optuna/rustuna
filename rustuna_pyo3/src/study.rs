@@ -21,6 +21,7 @@ use crate::attrs::{convert_pydict_to_fixed_params, pyobj_to_attrs_with_kind, Att
 use crate::exception::err_to_exceptions;
 use crate::sampler::cmaes::PyCmaEsSampler;
 use crate::sampler::nsgaii::PyNSGAIISampler;
+use crate::sampler::qmc::PyQmcSampler;
 use crate::sampler::random::PyRandomSampler;
 use crate::sampler::to_rust::ToRustSampler;
 use crate::sampler::tpe::PyTpeSampler;
@@ -206,6 +207,8 @@ fn resolve_sampler_pyobj(
         Ok((py_cmaes_sampler.sampler.clone(), sampler_pyobj))
     } else if let Ok(py_random_sampler) = sampler_ref.extract::<PyRandomSampler>() {
         Ok((py_random_sampler.sampler.clone(), sampler_pyobj))
+    } else if let Ok(py_qmc_sampler) = sampler_ref.extract::<PyQmcSampler>() {
+        Ok((py_qmc_sampler.sampler.clone(), sampler_pyobj))
     } else {
         let sampler: SharedSampler = Arc::new(Mutex::new(ToRustSampler::new(sampler)));
         Ok((sampler, sampler_pyobj))

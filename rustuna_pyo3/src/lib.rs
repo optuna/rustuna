@@ -43,6 +43,7 @@ fn rustuna(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<sampler::PySamplerContext>()?;
     m.add_class::<sampler::cmaes::PyCmaEsSampler>()?;
     m.add_class::<sampler::random::PyRandomSampler>()?;
+    m.add_class::<sampler::qmc::PyQmcSampler>()?;
     // importance
     m.add_function(wrap_pyfunction!(importance::py_get_param_importances, m)?)?;
     m.add_class::<importance::PyPedAnovaImportanceEvaluator>()?;

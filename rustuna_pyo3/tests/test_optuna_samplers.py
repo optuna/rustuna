@@ -36,6 +36,24 @@ class TestNSGAIISampler(BasicSamplerTestCase, MultiObjectiveSamplerTestCase):
         return lambda: ToOptunaSampler(rustuna.samplers.NSGAIISampler())
 
 
+class TestQMCSampler(BasicSamplerTestCase, RelativeSamplerTestCase):
+    @pytest.fixture
+    def sampler(self) -> Callable[[], BaseSampler]:
+        return lambda: ToOptunaSampler(rustuna.samplers.QMCSampler())
+
+    @pytest.mark.parametrize("n_jobs", [1])
+    def test_trial_relative_params(
+        self, n_jobs: int, sampler: Callable[[], BaseSampler]
+    ) -> None:
+        # n_jobs > 1 is excluded because ToRustStorage deadlocks under concurrent access: its
+        # Python-facing methods take the storage lock while holding the GIL, while the Rust-side
+        # Storage implementation reaches back into Python while holding that same lock. This is
+        # not specific to QMCSampler; TPESampler deadlocks the same way with enough threads and
+        # trials. QMCSampler only makes it easier to hit because it touches the storage on every
+        # joint sample to reserve a sequence index.
+        super().test_trial_relative_params(n_jobs, sampler)
+
+
 class TestCmaEsSampler(BasicSamplerTestCase, RelativeSamplerTestCase):
     @pytest.fixture
     def sampler(self) -> Callable[[], BaseSampler]:

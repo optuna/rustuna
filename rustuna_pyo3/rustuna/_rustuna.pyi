@@ -1223,6 +1223,66 @@ class RandomSampler:
         values: list[float] | None = None,
     ) -> None: ...
 
+class QMCSampler:
+    """A Quasi-Monte Carlo Sampler that generates low-discrepancy sequences.
+
+    The sampler covers the search space with a low-discrepancy sequence instead of independent
+    random draws, so a given number of trials spreads more evenly than random search does. The
+    sequence matches `scipy.stats.qmc.Sobol(d, scramble=False)`, which is what Optuna's
+    `QMCSampler` uses under its default settings. Scrambling is not implemented yet.
+
+    Sobol' points are most uniform when the number of trials is a power of two. Parameters
+    outside the joint search space, including everything in the first trial, fall back to
+    random sampling.
+
+    The parameters of the first completed trial fix how many dimensions the sequence has for the
+    rest of the study. A parameter that only some trials suggest drops out of the joint search
+    space and falls back to random sampling, but the dimension stays put so the sequence carries
+    on instead of restarting and repeating points.
+
+    That first trial may therefore suggest at most 1024 parameters, which is how far the embedded
+    table of direction numbers reaches. A larger one raises an error even when the joint search
+    space the later trials share is smaller.
+
+    The position in the sequence is kept in a study system attribute rather than in the sampler,
+    so workers sharing a storage walk one sequence together and a resumed study continues where
+    it left off. Threads within one process are serialized by the storage lock, but two processes
+    can reserve the same index, because reading and writing the counter is not a single storage
+    transaction.
+
+    Args:
+        seed: Random seed of the sampler used for parameters outside the joint search space.
+            The Sobol' sequence itself is deterministic and ignores this. If None, a default
+            seed is used.
+    """
+    def __init__(
+        self,
+        *,
+        seed: int | None = None,
+    ) -> None: ...
+    @property
+    def support_joint_sampling(self) -> bool: ...
+    def sample_joint(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+        search_space: dict[str, Distribution],
+    ) -> dict[str, float]: ...
+    def sample_independent(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+        name: str,
+        distribution: Distribution,
+    ) -> float: ...
+    def after_trial(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+        state: TrialState,
+        values: list[float] | None = None,
+    ) -> None: ...
+
 class TPESampler:
     """Sampler using TPE (Tree-structured Parzen Estimator) algorithm.
 
