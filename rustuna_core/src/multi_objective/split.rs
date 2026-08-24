@@ -406,6 +406,9 @@ mod tests {
 
     #[test]
     fn split_trials_matches_index_based_split() {
+        // The mutually non-dominated feasible trials 0, 4, 5, and 6 form a rank-0
+        // front larger than gamma, so the promising set is completed by
+        // hypervolume subset selection rather than by whole-rank inclusion.
         let trials = [
             complete_trial(0, vec![1.0, 8.0], None),
             complete_trial(1, vec![f64::INFINITY, 1.0], Some(-1.0)),
@@ -413,6 +416,7 @@ mod tests {
             complete_trial(3, vec![3.0, 3.0], Some(2.0)),
             complete_trial(4, vec![4.0, 1.0], None),
             complete_trial(5, vec![0.5, 9.0], Some(-0.5)),
+            complete_trial(6, vec![3.0, 2.0], None),
         ];
         let trial_refs: Vec<&PersistedTrial> = trials.iter().collect();
         let directions = [Direction::Minimize, Direction::Minimize];
