@@ -15,6 +15,8 @@ use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::Result;
 use rustuna_core::{Error, ErrorKind};
 
+const PARENT_CACHE_KEY_PREFIX: &str = "NSGAIISampler:parent:";
+
 /// NSGA-II sampler for multi-objective optimization.
 ///
 /// NSGA-II stands for Nondominated Sorting Genetic Algorithm II, a fast and elitist
@@ -161,6 +163,70 @@ impl NSGAIISampler {
         }
         Ok(())
     }
+    /// Builds the study-system-attribute key under which parent trial IDs for `generation`
+    /// are persisted.
+    fn parent_cache_key(generation: u32) -> AttrKey {
+        AttrKey::System(format!("{PARENT_CACHE_KEY_PREFIX}{generation}").into())
+    }
+
+    /// Encodes a list of trial numbers as a JSON array of trial IDs for persistence.
+    fn encode_parent_trial_ids(
+        trials: &[Option<PersistedTrial>],
+        population_numbers: &[u32],
+    ) -> Result<String> {
+        let trial_ids = population_numbers
+            .iter()
+            .map(|number| {
+                trials
+                    .get(*number as usize)
+                    .and_then(Option::as_ref)
+                    .map(|trial| trial.id)
+                    .ok_or_else(|| Error::new(ErrorKind::TrialDiscarded))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        serde_json::to_string(&trial_ids).map_err(|error| {
+            Error::with_reason(
+                ErrorKind::Unexpected,
+                format!("Failed to encode NSGA-II parent cache: {error}"),
+            )
+        })
+    }
+
+    /// Decodes a persisted JSON array of trial IDs back into trial numbers.
+    ///
+    /// Returns `None` when the cache is stale or incompatible with the current sampler,
+    /// allowing the caller to fall back to full recomputation.
+    fn decode_parent_population_numbers(
+        completed_trial_numbers_by_id: &HashMap<u32, u32>,
+        encoded: &str,
+        population_size: usize,
+    ) -> Result<Option<Vec<u32>>> {
+        let trial_ids: Vec<u32> = serde_json::from_str(encoded).map_err(|error| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Invalid NSGA-II parent cache: {error}"),
+            )
+        })?;
+        if trial_ids.len() != population_size {
+            return Ok(None);
+        }
+        let mut unique_trial_ids = trial_ids.clone();
+        unique_trial_ids.sort_unstable();
+        unique_trial_ids.dedup();
+        if unique_trial_ids.len() != trial_ids.len() {
+            return Ok(None);
+        }
+
+        let mut population_numbers = Vec::with_capacity(trial_ids.len());
+        for trial_id in trial_ids {
+            match completed_trial_numbers_by_id.get(&trial_id) {
+                Some(number) => population_numbers.push(*number),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(population_numbers))
+    }
+
     fn select_elite_population_numbers(
         &self,
         ctx: &Context,
@@ -183,32 +249,98 @@ impl NSGAIISampler {
         }
         Ok(elite_population_numbers)
     }
-    fn get_parent_population_numbers(
-        &self,
-        ctx: &Context,
-        trials: &[Option<PersistedTrial>],
-    ) -> Result<(i32, Vec<u32>)> {
+    fn get_child_generation(&self, trials: &[Option<PersistedTrial>]) -> Result<u32> {
+        // TODO: Incrementally sync trials completed by other workers without a full rescan.
         if self.get_generation_to_numbers_read_lock()?.is_empty() {
             self.rebuild_generation_cache(trials)?;
         }
 
-        let mut parent_generation = -1;
-        let mut parent_population_numbers = Vec::with_capacity(10);
-        for generation in 0..10 {
-            let population_numbers =
-                match self.get_generation_to_numbers_read_lock()?.get(&generation) {
-                    Some(numbers) if numbers.len() >= self.population_size => numbers.clone(),
-                    _ => break,
-                };
-
-            let mut population_numbers = population_numbers;
-            population_numbers.append(&mut parent_population_numbers);
-            let selected_population_numbers =
-                self.select_elite_population_numbers(ctx, trials, &population_numbers)?;
-            parent_generation = generation as i32;
-            parent_population_numbers = selected_population_numbers;
+        let mut child_generation = 0u32;
+        loop {
+            let full = self
+                .get_generation_to_numbers_read_lock()?
+                .get(&child_generation)
+                .is_some_and(|numbers| numbers.len() >= self.population_size);
+            if !full {
+                break;
+            }
+            child_generation = child_generation.checked_add(1).ok_or_else(|| {
+                Error::with_reason(ErrorKind::Unexpected, "NSGA-II generation overflow")
+            })?;
         }
-        Ok((parent_generation, parent_population_numbers))
+        Ok(child_generation)
+    }
+
+    fn get_parent_population_numbers(
+        &self,
+        ctx: &Context,
+        trials: &[Option<PersistedTrial>],
+        child_generation: u32,
+        get_cached_parent: impl Fn(u32) -> Option<String>,
+    ) -> Result<(u32, Vec<u32>, Attrs)> {
+        if child_generation == 0 {
+            return Ok((0, Vec::new(), Attrs::new()));
+        }
+
+        // TODO: Persist trial numbers with IDs to avoid rebuilding this map for every sample.
+        let completed_trial_numbers_by_id = trials
+            .iter()
+            .flatten()
+            .filter_map(|trial| {
+                matches!(trial.state_values, TrialStateValues::Complete(_))
+                    .then_some((trial.id, trial.number))
+            })
+            .collect::<HashMap<_, _>>();
+
+        // Try to restore the parent population from persisted cache.
+        if let Some(encoded) = get_cached_parent(child_generation) {
+            if let Some(numbers) = Self::decode_parent_population_numbers(
+                &completed_trial_numbers_by_id,
+                &encoded,
+                self.population_size,
+            )? {
+                return Ok((child_generation, numbers, Attrs::new()));
+            }
+        }
+
+        // Cache miss or stale: find the most recent cached generation to start from.
+        let mut first_missing_generation = 1u32;
+        let mut parent_population_numbers = Vec::new();
+        for gen in (1..child_generation).rev() {
+            if let Some(encoded) = get_cached_parent(gen) {
+                if let Some(numbers) = Self::decode_parent_population_numbers(
+                    &completed_trial_numbers_by_id,
+                    &encoded,
+                    self.population_size,
+                )? {
+                    first_missing_generation = gen + 1;
+                    parent_population_numbers = numbers;
+                    break;
+                }
+            }
+        }
+
+        // Recompute elite selection for each missing generation.
+        let mut new_attrs = Attrs::new();
+        for generation in first_missing_generation..=child_generation {
+            let population_numbers = match self
+                .get_generation_to_numbers_read_lock()?
+                .get(&(generation - 1))
+            {
+                Some(numbers) if numbers.len() >= self.population_size => numbers.clone(),
+                _ => break,
+            };
+
+            let mut candidates = population_numbers;
+            candidates.append(&mut parent_population_numbers);
+            parent_population_numbers =
+                self.select_elite_population_numbers(ctx, trials, &candidates)?;
+
+            let encoded = Self::encode_parent_trial_ids(trials, &parent_population_numbers)?;
+            new_attrs.insert(Self::parent_cache_key(generation), encoded);
+        }
+
+        Ok((child_generation, parent_population_numbers, new_attrs))
     }
     fn crossover(
         &self,
@@ -319,29 +451,51 @@ impl Sampler for NSGAIISampler {
         let mut guard = storage
             .write()
             .map_err(|_e| Error::new(ErrorKind::Unexpected))?;
-        let (parent_generation, parent_population_numbers) = {
+        let (child_generation, parent_population_numbers, parent_cache_attrs) = {
+            let child_generation = {
+                let trials = guard.get_trials(ctx.study_id)?;
+                self.get_child_generation(trials)?
+            };
+
+            let study_attrs = guard.get_study(ctx.study_id)?.attrs.clone();
+
             let trials = guard.get_trials(ctx.study_id)?;
-            self.get_parent_population_numbers(ctx, trials)?
+            self.get_parent_population_numbers(ctx, trials, child_generation, |gen| {
+                study_attrs.get(&Self::parent_cache_key(gen)).cloned()
+            })?
         };
-        let child_generation = u32::try_from(parent_generation + 1).unwrap();
         let mut attrs = Attrs::with_capacity(1);
         attrs.insert(
             AttrKey::System("generation".into()),
             (child_generation as f64).to_string(),
         );
         guard.set_trial_attrs(ctx.trial_id, attrs, false)?;
+        if !parent_cache_attrs.is_empty() {
+            guard.set_study_attrs(ctx.study_id, parent_cache_attrs, false)?;
+        }
 
-        if parent_generation < 0 {
+        if child_generation == 0 {
             drop(guard);
-            let params = HashMap::new();
-            return Ok(params);
+            return Ok(HashMap::new());
         }
 
         let (parent0_number, parent1_number) = {
             let mut selected = parent_population_numbers
                 .choose_multiple(self.get_rng_lock()?.deref_mut(), 2)
                 .copied();
-            (selected.next().unwrap(), selected.next().unwrap())
+            let parent0_number = selected.next().ok_or_else(|| {
+                Error::with_reason(
+                    ErrorKind::SamplerError,
+                    "NSGA-II requires at least two parent trials",
+                )
+            })?;
+            let parent1_number = selected.next().ok_or_else(|| {
+                Error::with_reason(
+                    ErrorKind::SamplerError,
+                    "NSGA-II requires at least two parent trials",
+                )
+            })?;
+            (parent0_number, parent1_number)
         };
 
         let trials = guard.get_trials(ctx.study_id)?;
@@ -811,5 +965,206 @@ mod tests {
                 ta.number
             );
         }
+    }
+
+    #[test]
+    fn test_parent_population_cache_persists() {
+        let storage = InMemoryStorage::new();
+        let directions = vec![Direction::Minimize, Direction::Minimize];
+        let study = create_study(
+            "parent-cache-test",
+            storage,
+            NSGAIISampler::new(2, None, 1.0, 1.0),
+            directions,
+        )
+        .unwrap();
+        study
+            .optimize(
+                |mut trial| {
+                    let x = trial.suggest_float("x", 0.0, 10.0)?;
+                    Ok(vec![x, -x])
+                },
+                24,
+            )
+            .unwrap();
+
+        // After 24 trials with population_size=2, there should be cached parent
+        // populations persisted as study system attributes.
+        let mut guard = study.storage.write().unwrap();
+        let persisted_study = guard.get_study(study.id).unwrap();
+        let has_cache = persisted_study
+            .attrs
+            .iter()
+            .any(|(key, _)| {
+                matches!(key, AttrKey::System(ref s) if s.as_str().starts_with(PARENT_CACHE_KEY_PREFIX))
+            });
+        assert!(has_cache, "parent population cache should be persisted");
+    }
+
+    #[test]
+    fn test_parent_population_cache_restored_after_restart() {
+        let storage = InMemoryStorage::new();
+        let directions = vec![Direction::Minimize, Direction::Minimize];
+        let study = create_study(
+            "parent-cache-restart",
+            storage,
+            NSGAIISampler::new(2, None, 1.0, 1.0),
+            directions,
+        )
+        .unwrap();
+        study
+            .optimize(
+                |mut trial| {
+                    let x = trial.suggest_float("x", 0.0, 10.0)?;
+                    Ok(vec![x, -x])
+                },
+                20,
+            )
+            .unwrap();
+
+        // Record the cached parent IDs before restart.
+        let cached_ids: Vec<String> = {
+            let mut guard = study.storage.write().unwrap();
+            let persisted_study = guard.get_study(study.id).unwrap();
+            persisted_study
+                .attrs
+                .iter()
+                .filter(|(key, _)| {
+                    matches!(key, AttrKey::System(ref s) if s.as_str().starts_with(PARENT_CACHE_KEY_PREFIX))
+                })
+                .map(|(_, v)| v.clone())
+                .collect()
+        };
+        assert!(!cached_ids.is_empty(), "cache should exist before restart");
+
+        // Create a new sampler instance (simulating restart) and run more trials.
+        let new_sampler = NSGAIISampler::new(2, None, 1.0, 1.0);
+        let resumed = rustuna_core::study::Study::from_id(
+            study.id,
+            std::sync::Arc::clone(&study.storage),
+            std::sync::Arc::new(new_sampler),
+        )
+        .unwrap();
+
+        // The resumed study should produce more trials without errors.
+        resumed
+            .optimize(
+                |mut trial| {
+                    let x = trial.suggest_float("x", 0.0, 10.0)?;
+                    Ok(vec![x, -x])
+                },
+                10,
+            )
+            .unwrap();
+
+        let total = resumed.get_trials().unwrap().len();
+        assert_eq!(total, 30, "should have 30 trials after restart");
+    }
+
+    #[test]
+    fn test_invalid_parent_population_cache_is_recomputed() {
+        let study = create_study(
+            "parent-cache-invalid",
+            InMemoryStorage::new(),
+            NSGAIISampler::new(2, None, 1.0, 1.0),
+            vec![Direction::Minimize, Direction::Minimize],
+        )
+        .unwrap();
+        study
+            .optimize(
+                |mut trial| {
+                    let x = trial.suggest_float("x", 0.0, 10.0)?;
+                    Ok(vec![x, -x])
+                },
+                3,
+            )
+            .unwrap();
+
+        let cache_key = NSGAIISampler::parent_cache_key(1);
+        {
+            let mut attrs = Attrs::new();
+            attrs.insert(cache_key.clone(), "[]".to_string());
+            study
+                .storage
+                .write()
+                .unwrap()
+                .set_study_attrs(study.id, attrs, false)
+                .unwrap();
+        }
+
+        let resumed = rustuna_core::study::Study::from_id(
+            study.id,
+            Arc::clone(&study.storage),
+            Arc::new(NSGAIISampler::new(2, None, 1.0, 1.0)),
+        )
+        .unwrap();
+        resumed.ask().unwrap();
+
+        let encoded = resumed
+            .storage
+            .write()
+            .unwrap()
+            .get_study_attr(resumed.id, cache_key)
+            .unwrap();
+        let parent_ids: Vec<u32> = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(parent_ids.len(), 2);
+    }
+
+    #[test]
+    fn test_parent_population_cache_preserves_parent_order() {
+        let completed_trial_numbers_by_id = HashMap::from([(10, 2), (20, 0), (30, 1)]);
+        let population_numbers = NSGAIISampler::decode_parent_population_numbers(
+            &completed_trial_numbers_by_id,
+            "[10,20,30]",
+            3,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(population_numbers, vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn test_parent_population_cache_is_recomputed_when_population_size_changes() {
+        let study = create_study(
+            "parent-cache-population-size",
+            InMemoryStorage::new(),
+            NSGAIISampler::new(2, None, 1.0, 1.0),
+            vec![Direction::Minimize, Direction::Minimize],
+        )
+        .unwrap();
+        study
+            .optimize(
+                |mut trial| {
+                    let x = trial.suggest_float("x", 0.0, 10.0)?;
+                    Ok(vec![x, -x])
+                },
+                3,
+            )
+            .unwrap();
+
+        let resumed = rustuna_core::study::Study::from_id(
+            study.id,
+            Arc::clone(&study.storage),
+            Arc::new(NSGAIISampler::new(3, None, 1.0, 1.0)),
+        )
+        .unwrap();
+        let generation_zero_trial = resumed.ask().unwrap();
+        resumed
+            .tell(
+                generation_zero_trial.number,
+                TrialStateValues::Complete(vec![5.0, -5.0]),
+            )
+            .unwrap();
+        resumed.ask().unwrap();
+
+        let encoded = resumed
+            .storage
+            .write()
+            .unwrap()
+            .get_study_attr(resumed.id, NSGAIISampler::parent_cache_key(1))
+            .unwrap();
+        let parent_ids: Vec<u32> = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(parent_ids.len(), 3);
     }
 }

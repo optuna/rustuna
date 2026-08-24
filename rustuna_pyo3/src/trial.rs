@@ -282,16 +282,8 @@ impl PyTrial {
     pub fn storage<'py>(&self, py: Python<'py>) -> Py<PyAny> {
         self.storage_pyobj.clone_ref(py)
     }
-    // suggest_* runs its Rust work detached (GIL released), which upholds the
-    // rule shared with ask/tell/optimize in study.rs: never wait for the
-    // sampler mutex / storage rwlock while holding the GIL. The rule is
-    // needed because the ToRust* adapters for Python-backed samplers/storages
-    // hold these locks while (re)attaching — one half of a GIL <-> lock
-    // deadlock cycle. The cycle closes only if another thread holds the GIL
-    // while waiting for the same lock, and that is the half this rule
-    // eliminates. Detaching also lets other Python threads run while the
-    // sampler computes. Keep this unconditional: an attached fast path for
-    // Python-backed components reintroduces the deadlock.
+    // TODO(porink0424): Handle the potential GIL/lock deadlock in the ToRust*
+    // adapters for Python-backed components.
     #[pyo3(signature = (name, low, high, step=None, log=false))]
     pub fn suggest_float(
         &mut self,
