@@ -389,12 +389,13 @@ impl PyStudy {
         })
     }
 
-    /// The optimize loop. ask/tell take the storage write lock and sampler
-    /// mutex inside rustuna_core: they run detached (see the comment on
-    /// `PyTrial::suggest_float`), which also lets other Python threads —
-    /// including concurrent optimize calls on this study — make progress
-    /// while a trial is being sampled or stored. Only the objective call,
-    /// its result conversion, and the exception classification run attached.
+    /// The optimize loop. ask/tell take the storage write lock and the
+    /// sampler-internal locks inside rustuna_core: they run detached (see
+    /// the comment on `PyTrial::suggest_float`), which also lets other
+    /// Python threads — including concurrent optimize calls on this study —
+    /// make progress while a trial is being sampled or stored. Only the
+    /// objective call, its result conversion, and the exception
+    /// classification run attached.
     #[pyo3(signature = (objective, n_trials, catch = None))]
     pub fn optimize(
         &self,
