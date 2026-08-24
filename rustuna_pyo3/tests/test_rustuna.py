@@ -439,3 +439,70 @@ def test_get_pareto_front():
     trials = study.best_trials
     assert len(trials) > 0
     assert len(trials) <= 10
+
+
+def test_tell_infeasible_values_without_state_marks_trial_failed():
+    study = rustuna.create_study()
+    trial = study.ask()
+    with pytest.warns(UserWarning, match="did not match the number of the objectives"):
+        study.tell(trial.number, [1.0, 2.0])
+    assert study.trials[trial.number].state == rustuna.trial.TrialState.FAIL
+
+    # The study must remain fully usable afterwards.
+    ok = study.ask()
+    study.tell(ok.number, 1.0)
+    assert study.best_trial.number == ok.number
+
+
+def test_tell_infeasible_values_with_complete_state_raises():
+    study = rustuna.create_study()
+    trial = study.ask()
+    with pytest.raises(ValueError, match="did not match the number of the objectives"):
+        study.tell(trial.number, [1.0, 2.0], state=rustuna.trial.TrialState.COMPLETE)
+    assert study.trials[trial.number].state == rustuna.trial.TrialState.RUNNING
+
+
+def test_tell_nan_values():
+    study = rustuna.create_study()
+    trial = study.ask()
+    with pytest.warns(UserWarning, match="is not acceptable"):
+        study.tell(trial.number, float("nan"))
+    assert study.trials[trial.number].state == rustuna.trial.TrialState.FAIL
+
+    trial = study.ask()
+    with pytest.raises(ValueError, match="is not acceptable"):
+        study.tell(trial.number, float("nan"), state=rustuna.trial.TrialState.COMPLETE)
+
+
+def test_tell_empty_values_marks_trial_failed():
+    study = rustuna.create_study()
+    trial = study.ask()
+    with pytest.warns(UserWarning, match="did not match the number of the objectives"):
+        study.tell(trial.number, [])
+    assert study.trials[trial.number].state == rustuna.trial.TrialState.FAIL
+
+
+def test_optimize_with_infeasible_values_continues_with_failed_trials():
+    study = rustuna.create_study()
+    with pytest.warns(UserWarning, match="did not match the number of the objectives"):
+        study.optimize(lambda t: (1.0, 2.0), n_trials=3)
+    assert len(study.trials) == 3
+    assert all(t.state == rustuna.trial.TrialState.FAIL for t in study.trials)
+
+
+def test_best_trial_on_multi_objective_study_raises_without_breaking_study():
+    study = rustuna.create_study(directions=["minimize", "minimize"])
+    trial = study.ask()
+    study.tell(trial.number, [1.0, 2.0])
+    with pytest.raises(RuntimeError):
+        study.best_trial
+    # The storage lock must not be poisoned by the failure above.
+    assert len(study.trials) == 1
+    assert len(study.best_trials) == 1
+
+
+def test_add_trial_with_mismatched_values_raises_value_error():
+    study = rustuna.create_study()
+    trial = rustuna.trial.create_trial(values=[1.0, 2.0])
+    with pytest.raises(ValueError, match="different from the number of objectives"):
+        study.add_trial(trial)

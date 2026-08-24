@@ -2,7 +2,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyFloat, PyInt, PyIterator, PyString, PyType};
 use pyo3::{PyTypeInfo, Python};
 
-use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUserWarning, PyValueError};
 use rustuna_core::ErrorKind;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -102,6 +102,35 @@ fn objective_result_to_values(val: Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
         }
         Ok(vals)
     }
+}
+
+/// Rust port of Optuna's `_check_values_are_feasible`: returns `Some(message)`
+/// when the told values cannot be accepted as objective values of the study.
+fn values_infeasible_reason(values: &[f64], n_objectives: usize) -> Option<String> {
+    let errors: Vec<String> = values
+        .iter()
+        .filter(|v| v.is_nan())
+        .map(|v| format!("The value {v} is not acceptable"))
+        .collect();
+    if !errors.is_empty() {
+        return Some(errors.join("; "));
+    }
+    if values.len() != n_objectives {
+        return Some(format!(
+            "The number of the values {} did not match the number of the objectives {}",
+            values.len(),
+            n_objectives
+        ));
+    }
+    None
+}
+
+/// Emits a `UserWarning`, matching Optuna's behavior of warning instead of
+/// raising when `tell` receives infeasible values without an explicit state.
+fn warn_user(py: Python<'_>, message: &str) -> PyResult<()> {
+    let message = std::ffi::CString::new(message)
+        .unwrap_or_else(|_| std::ffi::CString::new("invalid warning message").unwrap());
+    PyErr::warn(py, &py.get_type::<PyUserWarning>(), &message, 1)
 }
 
 fn matches_any_exception(py: Python<'_>, err: &PyErr, catch: &[Py<PyAny>]) -> PyResult<bool> {
@@ -411,11 +440,16 @@ impl PyStudy {
 
             match result {
                 Ok(val) => {
-                    py.detach(|| {
-                        self.study
-                            .tell(trial_number, TrialStateValues::Complete(val))
-                    })
-                    .map_err(|e| PyRuntimeError::new_err(format!("Failed to tell: {e:?}")))?;
+                    let state_values =
+                        match values_infeasible_reason(&val, self.study.directions.len()) {
+                            Some(msg) => {
+                                warn_user(py, &msg)?;
+                                TrialStateValues::Fail
+                            }
+                            None => TrialStateValues::Complete(val),
+                        };
+                    py.detach(|| self.study.tell(trial_number, state_values))
+                        .map_err(|e| PyRuntimeError::new_err(format!("Failed to tell: {e:?}")))?;
                 }
                 Err(e) => {
                     let (state, should_reraise) =
@@ -470,10 +504,23 @@ impl PyStudy {
                 "values must be specified when state is COMPLETE",
             )),
             (Some(PyTrialState::COMPLETE), Some(values)) => {
-                objective_result_to_values(values.bind(py).clone()).map(TrialStateValues::Complete)
+                objective_result_to_values(values.bind(py).clone()).and_then(|v| {
+                    match values_infeasible_reason(&v, self.study.directions.len()) {
+                        Some(msg) => Err(PyValueError::new_err(msg)),
+                        None => Ok(TrialStateValues::Complete(v)),
+                    }
+                })
             }
             (None, Some(values)) => {
-                objective_result_to_values(values.bind(py).clone()).map(TrialStateValues::Complete)
+                objective_result_to_values(values.bind(py).clone()).and_then(|v| {
+                    match values_infeasible_reason(&v, self.study.directions.len()) {
+                        Some(msg) => {
+                            warn_user(py, &msg)?;
+                            Ok(TrialStateValues::Fail)
+                        }
+                        None => Ok(TrialStateValues::Complete(v)),
+                    }
+                })
             }
         };
         let state_values = state_values?;
@@ -724,14 +771,15 @@ impl PyStudy {
         let best_trials = pareto_front_numbers
             .iter()
             .map(|n| {
-                PyPersistedTrial::from_storage(
-                    self.study.storage.clone(),
-                    trials_vec[*n as usize]
-                        .as_ref()
-                        .expect("pareto front trial should exist"),
-                )
+                trials_vec
+                    .get(*n as usize)
+                    .and_then(|t| t.as_ref())
+                    .map(|t| PyPersistedTrial::from_storage(self.study.storage.clone(), t))
+                    .ok_or_else(|| {
+                        PyRuntimeError::new_err(format!("Pareto front trial {n} not found"))
+                    })
             })
-            .collect();
+            .collect::<PyResult<Vec<_>>>()?;
         Ok(best_trials)
     }
 

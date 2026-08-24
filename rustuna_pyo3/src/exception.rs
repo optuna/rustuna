@@ -38,6 +38,7 @@ pub fn err_to_exceptions(e: rustuna_core::Error) -> PyErr {
             PyRuntimeError::new_err("Multi-objective study is not supported")
         }
         rustuna_core::ErrorKind::MissingDependency => PyImportError::new_err(e.reason),
+        rustuna_core::ErrorKind::InvalidObjectiveValues => PyValueError::new_err(e.reason),
         _ => PyRuntimeError::new_err(format!("{e:?}")),
     }
 }
