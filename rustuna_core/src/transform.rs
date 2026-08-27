@@ -193,14 +193,17 @@ fn untransform_numerical_param(transformed_param: f64, distribution: &Distributi
                 if distribution.is_single() {
                     param
                 } else {
-                    param.min(high.next_down())
+                    // `exp` does not round-trip `ln` exactly, so a transformed value sitting on
+                    // the lower bound can come back just below `low`. Clamping keeps every
+                    // suggestion inside the range the user asked for.
+                    param.clamp(*low, high.next_down())
                 }
             } else if let Some(step) = step {
                 round_to_step(transformed_param, *low, *high, *step)
             } else if distribution.is_single() {
                 transformed_param
             } else {
-                transformed_param.min(high.next_down())
+                transformed_param.clamp(*low, high.next_down())
             }
         }
         Distribution::Int {
@@ -296,6 +299,28 @@ mod tests {
             assert_close(untransformed[&name], value);
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_untransform_keeps_log_parameters_at_or_above_low() {
+        // `exp` does not round-trip `ln`: for this range `(1e-7f64).ln().exp()` lands just below
+        // 1e-7. Without the clamp in `untransform_numerical_param` the lower end of the range
+        // would leak out as a suggestion below `low`. A QMC sampler hits it on every study,
+        // because the first point of its sequence is the origin of the unit hypercube.
+        let low: f64 = 1e-7;
+        assert!(
+            low.ln().exp() < low,
+            "the round trip is expected to undershoot"
+        );
+
+        let search_space = HashMap::from([(
+            "x".to_string(),
+            Distribution::new_float(low, 1.0, None, true),
+        )]);
+        let transform = SearchSpaceTransform::new(&search_space).unwrap();
+
+        assert_eq!(transform.untransform(&[0.0]).unwrap()["x"], low);
+        assert!(transform.untransform(&[1.0]).unwrap()["x"] < 1.0);
     }
 
     #[test]

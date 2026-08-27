@@ -8,6 +8,9 @@ keywords.workspace = true
 categories.workspace = true
 license.workspace = true
 
+[features]
+qmc = []
+
 [dependencies]
 rand = { workspace = true }
 rustuna_core = { workspace = true }
