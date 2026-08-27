@@ -1229,6 +1229,11 @@ class RandomSampler:
         name: str,
         distribution: Distribution,
     ) -> float: ...
+    def before_trial(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+    ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
@@ -1324,6 +1329,11 @@ class TPESampler:
         name: str,
         distribution: Distribution,
     ) -> float: ...
+    def before_trial(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+    ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
@@ -1406,6 +1416,11 @@ class NSGAIISampler:
         name: str,
         distribution: Distribution,
     ) -> float: ...
+    def before_trial(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+    ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
@@ -1449,6 +1464,11 @@ class CmaEsSampler:
         name: str,
         distribution: Distribution,
     ) -> float: ...
+    def before_trial(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+    ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
