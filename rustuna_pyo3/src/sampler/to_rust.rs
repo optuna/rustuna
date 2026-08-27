@@ -28,6 +28,31 @@ impl ToRustSampler {
     }
 }
 impl Sampler for ToRustSampler {
+    fn before_trial(
+        &self,
+        ctx: &SamplerContext,
+        storage: Arc<std::sync::RwLock<dyn rustuna_core::storage::Storage>>,
+    ) -> rustuna_core::Result<()> {
+        let obj = self.obj.lock().map_err(|e| {
+            rustuna_core::Error::with_reason(
+                rustuna_core::ErrorKind::SamplerError,
+                format!("Failed to acquire sampler object guard: {e}"),
+            )
+        })?;
+        Python::attach(|py| {
+            let py_ctx = PySamplerContext::from(ctx.clone());
+            let py_storage = ToPythonStorage::new(storage);
+            obj.call_method1(py, "before_trial", (py_ctx, py_storage))
+                .map_err(|e| {
+                    rustuna_core::Error::with_reason(
+                        rustuna_core::ErrorKind::SamplerError,
+                        e.to_string(),
+                    )
+                })?;
+            Ok(())
+        })
+    }
+
     fn sample_independent(
         &self,
         ctx: &SamplerContext,

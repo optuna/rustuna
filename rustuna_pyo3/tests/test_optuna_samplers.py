@@ -63,9 +63,17 @@ class RecordingSampler:
         return False
 
     def __init__(self) -> None:
+        self.before_trial_calls: list[tuple[int, int]] = []
         self.after_trial_calls: list[
             tuple[int, int, rustuna.trial.TrialState, list[float] | None]
         ] = []
+
+    def before_trial(
+        self,
+        ctx: rustuna.samplers.SamplerContext,
+        storage: rustuna.storages.StorageProtocol,
+    ) -> None:
+        self.before_trial_calls.append((ctx.study_id, ctx.trial_number))
 
     def sample_joint(
         self,
@@ -132,6 +140,18 @@ def test_to_optuna_sampler_after_trial_is_called() -> None:
         assert state == rustuna.trial.TrialState.COMPLETE
         assert values is not None
         assert len(values) == 1
+
+
+def test_to_optuna_sampler_before_trial_is_called() -> None:
+    sampler = RecordingSampler()
+    study = optuna.create_study(sampler=ToOptunaSampler(sampler), direction="minimize")
+
+    study.optimize(lambda trial: trial.suggest_float("x", -1.0, 1.0), n_trials=2)
+
+    assert sampler.before_trial_calls == [
+        (study._study_id, 0),
+        (study._study_id, 1),
+    ]
 
 
 def test_to_optuna_sampler_after_trial_failure_still_persists_trial() -> None:
