@@ -286,7 +286,8 @@ class ToOptunaStorage(BaseStorage):
             else:
                 raise ValueError("Unexpected Study Direction")
 
-        study_name = study_name or DEFAULT_STUDY_NAME_PREFIX + str(uuid.uuid4())
+        if study_name is None:
+            study_name = DEFAULT_STUDY_NAME_PREFIX + str(uuid.uuid4())
         try:
             study = self._storage.create_new_study(study_name, rustuna_directions)
         except rustuna.exceptions.DuplicatedStudyError as e:
