@@ -46,6 +46,10 @@ class Suite(typing.Protocol):
         trials: list[optuna.trial.FrozenTrial] | list[rustuna.trial.PersistedTrial],
     ) -> None: ...
 
+    def assert_before_resume(
+        self, trials: list[rustuna.trial.PersistedTrial]
+    ) -> None: ...
+
 
 class SuiteAttr:
     directions = ["minimize"]
@@ -75,6 +79,9 @@ class SuiteAttr:
                 assert trial.user_attrs["rustuna"] == "foo"
                 assert trial.system_attrs["rustuna"] == "bar"
 
+    def assert_before_resume(self, trials: list[rustuna.trial.PersistedTrial]) -> None:
+        pass
+
 
 class SuiteSingleObjective:
     directions = ["minimize"]
@@ -99,6 +106,9 @@ class SuiteSingleObjective:
             assert isinstance(x, (int, float))
             assert 1.0 <= x <= 10.0
             assert trial.values == [x]
+
+    def assert_before_resume(self, trials: list[rustuna.trial.PersistedTrial]) -> None:
+        pass
 
 
 class TestSuiteParam:
@@ -144,6 +154,14 @@ class TestSuiteParam:
                     "green",
                 ]
 
+    def assert_before_resume(self, trials: list[rustuna.trial.PersistedTrial]) -> None:
+        for trial in trials:
+            distribution = typing.cast(typing.Any, trial.distributions["z"])
+            assert distribution.to_dict()["choices"] == [
+                "red",
+                "green",
+            ]
+
 
 class TestSuiteMultiObjective:
     directions = ["minimize", "maximize"]
@@ -176,6 +194,9 @@ class TestSuiteMultiObjective:
             assert len(trial.values) == 2
             assert trial.values[0] == x
             assert trial.values[1] == y
+
+    def assert_before_resume(self, trials: list[rustuna.trial.PersistedTrial]) -> None:
+        pass
 
 
 parametrize_test_suite = pytest.mark.parametrize(
@@ -385,6 +406,7 @@ def test_optuna_to_rustuna_resume(suite: Suite, backend: str) -> None:
             sampler=rustuna.samplers.RandomSampler(),
         )
         assert_rustuna_directions(rustuna_study.directions, suite)
+        suite.assert_before_resume(rustuna_study.trials)
         optuna_trial_count = len(optuna_study.trials)
         rustuna_study.optimize(suite.objective, n_trials=10)
 
