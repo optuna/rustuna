@@ -38,6 +38,14 @@ pub struct Context {
 /// A sampler can be shared by multiple optimization threads. Implementations must synchronize
 /// mutable state internally and keep immutable sampling work outside critical sections.
 pub trait Sampler: Send + Sync {
+    /// Hook called after a trial is created and before its search space is inferred.
+    ///
+    /// This corresponds to Optuna's `before_trial` hook. The trial can be retrieved from
+    /// `storage` with `ctx.trial_id`, and the study can be retrieved with `ctx.study_id`.
+    fn before_trial(&self, _ctx: &Context, _storage: Arc<RwLock<dyn Storage>>) -> Result<()> {
+        Ok(())
+    }
+
     /// Samples a single parameter independently.
     ///
     /// This method is used for parameters that are not covered by joint sampling. It is suitable

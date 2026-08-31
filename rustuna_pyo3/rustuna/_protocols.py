@@ -39,6 +39,21 @@ class SamplerProtocol(Protocol):
             Suggested parameter values (Optuna's internal representation).
         """
 
+    def before_trial(
+        self,
+        ctx: SamplerContext,
+        storage: StorageProtocol,
+    ) -> None:
+        """Run sampler pre-processing before search-space inference.
+
+        The newly created trial is available as ``storage.get_trial(ctx.trial_id)``.
+        The target study is available as ``storage.get_study(ctx.study_id)``.
+
+        Args:
+            ctx: Sampler context.
+            storage: Storage object.
+        """
+
     def sample_independent(
         self,
         ctx: SamplerContext,
