@@ -181,6 +181,9 @@ class ToRustunaStorage:
     def get_cached_trial(self, trial_id: int) -> rustuna.trial.PersistedTrial:
         return self.get_trial(trial_id)
 
+    def get_trial_number_from_id(self, trial_id: int) -> int:
+        return self._storage.get_trial_number_from_id(trial_id)
+
     def discard_trials(self, trial_ids: list[int]) -> None:
         pass
 
@@ -414,6 +417,9 @@ class ToOptunaStorage(BaseStorage):
     def get_trial(self, trial_id: int) -> FrozenTrial:
         persisted_trial = self._storage.get_trial(trial_id)
         return to_frozen_trial(persisted_trial)
+
+    def get_trial_number_from_id(self, trial_id: int) -> int:
+        return self._storage.get_trial_number_from_id(trial_id)
 
     def get_all_trials(
         self,

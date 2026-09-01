@@ -295,6 +295,17 @@ impl StorageBinding {
         })
     }
 
+    pub(crate) fn get_trial_number_from_id(&self, py: Python<'_>, trial_id: u32) -> PyResult<u32> {
+        py.detach(|| {
+            let mut guard = self.storage.write().map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
+            })?;
+            guard
+                .get_trial_number_from_id(trial_id)
+                .map_err(err_to_exceptions)
+        })
+    }
+
     pub(crate) fn get_study_user_attr(
         &self,
         py: Python<'_>,

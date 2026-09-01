@@ -601,6 +601,17 @@ impl rustuna_core::storage::Storage for CachedStorage {
         Ok(trial)
     }
 
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> Result<u32> {
+        if let Some((_, trial_number)) = self.trial_id_to_study_number.get(&trial_id) {
+            return Ok(*trial_number);
+        }
+
+        let trial = self.backend.get_trial(trial_id)?;
+        self.trial_id_to_study_number
+            .insert(trial.id, (trial.study_id, trial.number));
+        Ok(trial.number)
+    }
+
     fn set_category_labels(
         &mut self,
         study_id: u32,
@@ -1059,6 +1070,27 @@ mod tests {
         assert_eq!(t0.number, 0);
         let t1 = storage.get_trial(t1_id)?;
         assert_eq!(t1.number, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn get_trial_number_from_id_uses_backend_on_cache_miss() -> Result<()> {
+        let mut backend = DummyBackend::new();
+        let study_id = backend
+            .inner
+            .create_new_study("s", vec![Direction::Minimize])?
+            .id;
+        let trial_id = backend.inner.create_new_trial(study_id)?.id;
+        let mut storage = CachedStorage::new(Box::new(backend));
+
+        assert_eq!(storage.get_trial_number_from_id(trial_id)?, 0);
+        assert_eq!(
+            storage.trial_id_to_study_number.get(&trial_id),
+            Some(&(study_id, 0))
+        );
+
+        let error = storage.get_trial_number_from_id(u32::MAX).unwrap_err();
+        assert!(matches!(error.kind, ErrorKind::TrialNotFound));
         Ok(())
     }
 

@@ -286,6 +286,14 @@ impl ToRustStorage {
         })
     }
 
+    fn obj_get_trial_number_from_id(&self, trial_id: u32) -> PyResult<u32> {
+        Python::attach(|py| {
+            self.obj
+                .call_method1(py, "get_trial_number_from_id", (trial_id,))?
+                .extract(py)
+        })
+    }
+
     fn obj_get_n_trials(&self, study_id: u32, states: Option<&[TrialState]>) -> PyResult<u32> {
         Python::attach(|py| {
             let kwargs = PyDict::new(py);
@@ -671,6 +679,16 @@ impl Storage for ToRustStorage {
         trial_id: u32,
     ) -> rustuna_core::Result<&rustuna_core::trial::PersistedTrial> {
         self.cache.get_cached_trial(trial_id)
+    }
+
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> rustuna_core::Result<u32> {
+        match self.cache.get_trial_number_from_id(trial_id) {
+            Ok(trial_number) => Ok(trial_number),
+            Err(error) if matches!(error.kind, rustuna_core::ErrorKind::TrialNotFound) => self
+                .obj_get_trial_number_from_id(trial_id)
+                .map_err(Self::map_pyerr),
+            Err(error) => Err(error),
+        }
     }
 
     fn get_category_labels(

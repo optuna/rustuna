@@ -155,6 +155,10 @@ impl PySQLite3Storage {
         self.binding.get_cached_trial(py, trial_id)
     }
 
+    fn get_trial_number_from_id(&self, py: Python<'_>, trial_id: u32) -> PyResult<u32> {
+        self.binding.get_trial_number_from_id(py, trial_id)
+    }
+
     fn get_study_user_attr(&self, py: Python<'_>, study_id: u32, key: String) -> PyResult<String> {
         self.binding.get_study_user_attr(py, study_id, key)
     }
