@@ -531,6 +531,24 @@ impl Storage for JournalStorage {
             })
     }
 
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> Result<u32> {
+        if let Some((_, trial_number)) = self.replay.trial_id_to_study_number.get(&trial_id) {
+            return Ok(*trial_number);
+        }
+
+        self.sync_with_backend()?;
+        self.replay
+            .trial_id_to_study_number
+            .get(&trial_id)
+            .map(|(_, trial_number)| *trial_number)
+            .ok_or_else(|| {
+                Error::with_reason(
+                    ErrorKind::TrialNotFound,
+                    format!("Trial not found in storage: trial_id={trial_id}"),
+                )
+            })
+    }
+
     fn get_category_labels(
         &mut self,
         study_id: u32,
