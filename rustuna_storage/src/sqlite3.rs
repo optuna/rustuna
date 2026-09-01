@@ -2,9 +2,11 @@ use crate::cache::{CachedStorageBackend, DiscardedTrialsDiff};
 use rusqlite::{
     params, Connection, Error as RusqliteError, OptionalExtension, TransactionBehavior,
 };
-use rustuna_core::attr::{AttrKey, Attrs, CategoryLabel};
-use rustuna_core::datetime::now_naive_utc;
+use rustuna_core::attr::{
+    category_labels_to_attrs, get_category_labels, AttrKey, Attrs, CategoryLabel,
+};
 use rustuna_core::distribution::Distribution;
+use rustuna_core::internal::datetime::now_naive_utc;
 use rustuna_core::study::{Direction, PersistedStudy};
 use rustuna_core::trial::{PersistedTrial, TrialState, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
@@ -652,9 +654,9 @@ impl CachedStorageBackend for SQLite3Storage {
             .conn
             .lock()
             .map_err(|_| Error::new(ErrorKind::StorageError))?;
-        let exists: Option<u32> = guard
+        let study_id: Option<u32> = guard
             .query_row(
-                "SELECT trial_id FROM trials WHERE trial_id = ?",
+                "SELECT study_id FROM trials WHERE trial_id = ?",
                 params![trial_id],
                 |row| row.get(0),
             )
@@ -665,11 +667,15 @@ impl CachedStorageBackend for SQLite3Storage {
                     format!("Database query failed: {e}"),
                 )
             })?;
-        if exists.is_none() {
-            return Err(Error::new(ErrorKind::TrialNotFound));
-        }
+        let study_id = study_id.ok_or_else(|| Error::new(ErrorKind::TrialNotFound))?;
 
-        let distribution_json = distribution_to_json(distribution, None);
+        let labels = match distribution {
+            Distribution::Categorical { cardinality } => {
+                read_category_labels(&guard, study_id, name, *cardinality)?
+            }
+            _ => None,
+        };
+        let distribution_json = distribution_to_json(distribution, labels.as_deref());
         guard
             .execute(
                 "INSERT INTO trial_params (trial_id, param_name, param_value, distribution_json) \
@@ -950,6 +956,47 @@ impl CachedStorageBackend for SQLite3Storage {
                     )
                 })?;
                 attrs.insert(AttrKey::System(key.into()), value);
+            }
+
+            // Optuna stores categorical labels in each distribution JSON, whereas Rustuna's
+            // Storage API exposes them through study system attributes. Materialize that native
+            // representation when an Optuna-created database is opened.
+            let mut categorical_stmt = guard
+                .prepare(
+                    "SELECT DISTINCT tp.param_name, tp.distribution_json \
+                     FROM trial_params AS tp \
+                     JOIN trials AS t ON t.trial_id = tp.trial_id \
+                     WHERE t.study_id = ?",
+                )
+                .map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::StorageError,
+                        format!("Database query failed: {e}"),
+                    )
+                })?;
+            let categorical_rows = categorical_stmt
+                .query_map(params![study_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::StorageError,
+                        format!("Database query failed: {e}"),
+                    )
+                })?;
+            for row in categorical_rows {
+                let (param_name, distribution_json) = row.map_err(|e| {
+                    Error::with_reason(
+                        ErrorKind::StorageError,
+                        format!("Database query failed: {e}"),
+                    )
+                })?;
+                let (_, labels) = json_to_distribution(&distribution_json)?;
+                if let Some(labels) = labels {
+                    for (key, value) in category_labels_to_attrs(&param_name, &labels) {
+                        attrs.entry(key).or_insert(value);
+                    }
+                }
             }
 
             let study = PersistedStudy::new_with_attrs(study_id, study_name, directions, attrs);
@@ -1811,6 +1858,50 @@ fn distribution_to_json(distribution: &Distribution, labels: Option<&[CategoryLa
     .to_string()
 }
 
+fn read_category_labels(
+    conn: &Connection,
+    study_id: u32,
+    param_name: &str,
+    cardinality: usize,
+) -> Result<Option<Vec<CategoryLabel>>> {
+    if cardinality == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT key, value_json FROM study_system_attributes \
+             WHERE study_id = ? AND key LIKE 'category_labels:%'",
+        )
+        .map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Database query failed: {e}"),
+            )
+        })?;
+    let rows = stmt
+        .query_map(params![study_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Database query failed: {e}"),
+            )
+        })?;
+    let mut attrs = Attrs::new();
+    for row in rows {
+        let (key, value) = row.map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Database query failed: {e}"),
+            )
+        })?;
+        attrs.insert(AttrKey::System(key.into()), value);
+    }
+    Ok(get_category_labels(&attrs, param_name, cardinality))
+}
+
 fn category_label_to_value(label: &CategoryLabel) -> Value {
     match label {
         CategoryLabel::Float(f) => Number::from_f64(*f)
@@ -2577,6 +2668,81 @@ mod tests {
         assert_eq!(trial.internal_params["float"], 0.5);
         assert_eq!(trial.internal_params["int"], 5.0);
         assert_eq!(trial.internal_params["cat"], 1.0);
+        Ok(())
+    }
+
+    #[test]
+    fn suggest_categorical_enum_persists_categorical_choices() -> Result<()> {
+        let dir = TempDir::new().map_err(|_| Error::new(ErrorKind::Unexpected))?;
+        let path = dir.path().join("storage.sqlite3");
+        let path = path.to_string_lossy().to_string();
+        let storage = open_file_storage(&path, false)?;
+        let study = create_study(
+            "example",
+            storage,
+            RandomSampler::new(),
+            vec![Direction::Minimize],
+        )?;
+        let choices = vec![
+            CategoryLabel::String("red".to_string()),
+            CategoryLabel::Int(2),
+            CategoryLabel::Bool(true),
+            CategoryLabel::None,
+            CategoryLabel::Float(1.5),
+        ];
+        let mut trial = study.ask()?;
+        trial.suggest_categorical_enum("color", &choices)?;
+
+        let storage = SQLite3Storage::new(&path)?;
+        let distribution_json: String = storage
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::StorageError))?
+            .query_row(
+                "SELECT distribution_json FROM trial_params WHERE trial_id = ?",
+                params![trial.id],
+                |row| row.get(0),
+            )
+            .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        let distribution: Value = serde_json::from_str(&distribution_json)
+            .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+        assert_eq!(
+            distribution["attributes"]["choices"],
+            json!(["red", 2, true, Value::Null, 1.5])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn optuna_categorical_labels_are_exposed_as_study_attrs() -> Result<()> {
+        let mut storage = SQLite3Storage::new(":memory:")?;
+        storage.create_database()?;
+        let study_id = storage
+            .create_new_study("example", vec![Direction::Minimize])?
+            .id;
+        let trial_id = storage.create_new_trial(study_id)?.id;
+        let labels = vec![
+            CategoryLabel::String("red".to_string()),
+            CategoryLabel::Int(2),
+        ];
+        let distribution = Distribution::new_categorical(labels.len());
+        let distribution_json = distribution_to_json(&distribution, Some(&labels));
+        storage
+            .conn
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::StorageError))?
+            .execute(
+                "INSERT INTO trial_params (trial_id, param_name, param_value, distribution_json) \
+                 VALUES (?, 'color', 0, ?)",
+                params![trial_id, distribution_json],
+            )
+            .map_err(|e| Error::with_reason(ErrorKind::StorageError, e.to_string()))?;
+
+        let study = storage.get_study(study_id)?;
+        assert_eq!(
+            rustuna_core::attr::get_category_labels(&study.attrs, "color", 2),
+            Some(labels)
+        );
         Ok(())
     }
 

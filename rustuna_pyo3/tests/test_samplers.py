@@ -18,6 +18,13 @@ class DummyIndependentSampler:
     def support_joint_sampling(self) -> bool:
         return False
 
+    def before_trial(
+        self,
+        ctx: rustuna.samplers.SamplerContext,
+        storage: rustuna.storages.StorageProtocol,
+    ) -> None:
+        return None
+
     def sample_joint(
         self,
         ctx: rustuna.samplers.SamplerContext,
@@ -59,6 +66,13 @@ class DummyJointSampler:
     @property
     def support_joint_sampling(self) -> bool:
         return True
+
+    def before_trial(
+        self,
+        ctx: rustuna.samplers.SamplerContext,
+        storage: rustuna.storages.StorageProtocol,
+    ) -> None:
+        return None
 
     def sample_joint(
         self,
@@ -107,9 +121,18 @@ class DummyJointSampler:
 
 class RecordingSampler(DummyIndependentSampler):
     def __init__(self) -> None:
+        self.before_trial_calls: list[tuple[int, int, rustuna.trial.TrialState]] = []
         self.after_trial_calls: list[
             tuple[int, int, rustuna.trial.TrialState, list[float] | None]
         ] = []
+
+    def before_trial(
+        self,
+        ctx: rustuna.samplers.SamplerContext,
+        storage: rustuna.storages.StorageProtocol,
+    ) -> None:
+        trial = storage.get_trial(ctx.trial_id)
+        self.before_trial_calls.append((ctx.study_id, ctx.trial_number, trial.state))
 
     def after_trial(
         self,
@@ -175,6 +198,19 @@ def test_custom_sampler_after_trial_is_called() -> None:
         assert state == rustuna.trial.TrialState.COMPLETE
         assert values is not None
         assert len(values) == 1
+
+
+def test_custom_sampler_before_trial_is_called() -> None:
+    sampler = RecordingSampler()
+
+    study = rustuna.create_study(sampler=sampler)
+    study.optimize(lambda trial: trial.suggest_float("x", -1.0, 1.0), n_trials=3)
+
+    assert len(sampler.before_trial_calls) == 3
+    for study_id, trial_number, state in sampler.before_trial_calls:
+        assert study_id == study._study_id
+        assert trial_number >= 0
+        assert state == rustuna.trial.TrialState.RUNNING
 
 
 def test_custom_sampler_after_trial_failure_still_persists_trial() -> None:

@@ -112,15 +112,21 @@ class DummyJointSampler:
     def support_joint_sampling(self) -> bool:
         return True
 
+    def before_trial(
+        self,
+        ctx: rustuna.samplers.SamplerContext,
+        storage: rustuna.storages.StorageProtocol,
+    ) -> None:
+        return None
+
     def sample_joint(
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]:
+        # TODO(c-bata): Avoid calling sample_joint if the search space is empty.
         if ctx.trial_number == 0:
-            # Even if search space is empty, rustuna calls sample_joint method.
-            # Since sample_joint() may be used as a replacement of before_trial() method.
             return {}
 
         self.sample_joint_is_called = True

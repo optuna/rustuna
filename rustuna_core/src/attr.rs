@@ -85,7 +85,7 @@ impl CategoryLabel {
 }
 
 /// Returns the internal system-attribute key used to store a categorical label.
-pub fn system_key_category_label(param_name: &str, choice_idx: usize) -> AttrKey {
+pub(crate) fn system_key_category_label(param_name: &str, choice_idx: usize) -> AttrKey {
     AttrKey::System(format!("category_labels:{param_name}:{choice_idx}").into())
 }
 
@@ -118,12 +118,12 @@ pub fn get_category_labels(
 }
 
 /// Returns the internal system-attribute key used for queued fixed parameters.
-pub fn system_key_fixed_param(param_name: &str) -> AttrKey {
+pub(crate) fn system_key_fixed_param(param_name: &str) -> AttrKey {
     AttrKey::System(format!("fixed_params:{param_name}").into())
 }
 
 /// Encodes fixed parameter values into trial attributes.
-pub fn fixed_params_to_attrs(params: &HashMap<String, CategoryLabel>) -> Attrs {
+pub(crate) fn fixed_params_to_attrs(params: &HashMap<String, CategoryLabel>) -> Attrs {
     let mut attrs = Attrs::new();
     for (name, value) in params {
         let key = system_key_fixed_param(name);
@@ -132,14 +132,8 @@ pub fn fixed_params_to_attrs(params: &HashMap<String, CategoryLabel>) -> Attrs {
     attrs
 }
 
-/// Returns a fixed parameter value stored in attributes.
-pub fn get_fixed_param(attrs: &Attrs, param_name: &str) -> Option<CategoryLabel> {
-    let key = system_key_fixed_param(param_name);
-    attrs.get(&key).and_then(|s| CategoryLabel::deserialize(s))
-}
-
 /// Extracts all fixed parameters stored in trial attributes.
-pub fn extract_fixed_params(attrs: &Attrs) -> HashMap<String, CategoryLabel> {
+pub(crate) fn extract_fixed_params(attrs: &Attrs) -> HashMap<String, CategoryLabel> {
     let mut params = HashMap::new();
     for (key, value) in attrs {
         if let AttrKey::System(s) = key {

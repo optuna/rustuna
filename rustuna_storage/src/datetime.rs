@@ -5,7 +5,7 @@
 //! matching Optuna, because a log entry is JSON and can spell out the offset without the schema
 //! concerns a database column has.
 
-use rustuna_core::datetime::now_naive_utc;
+use rustuna_core::internal::datetime::now_naive_utc;
 
 /// Width of the `YYYY-MM-DDTHH:MM:SS` prefix every journal datetime starts with.
 const DATE_TIME_LEN: usize = 19;

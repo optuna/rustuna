@@ -96,6 +96,11 @@ impl PyNSGAIISampler {
         })
     }
 
+    fn before_trial(&self, ctx: &PySamplerContext, storage: Py<PyAny>) -> PyResult<()> {
+        let _ = (ctx, storage);
+        Ok(())
+    }
+
     #[pyo3(signature = (ctx, storage, state, values = None))]
     fn after_trial(
         &self,

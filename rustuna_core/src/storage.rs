@@ -93,6 +93,8 @@ pub trait Storage: Send + Sync {
     ///
     /// This method is intended for read-only cache hits under a shared lock.
     fn get_cached_trial(&self, trial_id: u32) -> Result<&PersistedTrial>;
+    /// Returns the trial number for a trial ID.
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> Result<u32>;
     // Design Note:
     // Category labels are stored in study system attrs internally, but exposed via dedicated
     // APIs for caching efficiency. Since category labels cannot be overwritten once set for
@@ -501,6 +503,12 @@ impl Storage for InMemoryStorage {
                 .and_then(Option::as_ref),
         )?;
         Ok(trial)
+    }
+
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> Result<u32> {
+        let (_, trial_number) =
+            get_study_id_trial_number_by_trial_id(&self.trial_id_number_map, trial_id)?;
+        Ok(trial_number)
     }
 
     fn set_category_labels(

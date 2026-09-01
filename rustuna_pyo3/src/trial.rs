@@ -160,7 +160,7 @@ pub fn py_create_trial(
         system_attrs.unwrap_or_default(),
     );
 
-    let now = rustuna_core::datetime::now_naive_utc();
+    let now = rustuna_core::internal::datetime::now_naive_utc();
     if matches!(state, PyTrialState::WAITING) {
         trial.datetime_start = None;
         trial.datetime_complete = None;

@@ -293,18 +293,13 @@ impl MixtureOfProductDistribution {
             .map(|&w| if w > 0.0 { w.ln() } else { f64::NEG_INFINITY })
             .collect::<Vec<_>>();
 
-        let alias = WeightedAliasIndex::new(weights.clone())
-            .expect("weights must be non-empty and non-negative");
-
-        let mut param_names: Vec<String> = distributions_map.keys().cloned().collect();
-        param_names.sort();
-
-        let mut distributions: Vec<Distributions> = Vec::with_capacity(param_names.len());
-        for name in param_names.iter() {
-            distributions.push(distributions_map.get(name).unwrap().clone());
-        }
-
         let n_kernels = weights.len();
+        let alias =
+            WeightedAliasIndex::new(weights).expect("weights must be non-empty and non-negative");
+
+        let mut entries: Vec<_> = distributions_map.into_iter().collect();
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let (param_names, distributions) = entries.into_iter().unzip();
 
         MixtureOfProductDistribution {
             param_names,

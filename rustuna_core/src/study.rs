@@ -221,6 +221,14 @@ impl Study {
                 )
             };
 
+        let ctx = SamplerContext {
+            study_id: self.id,
+            trial_number,
+            trial_id,
+            directions: self.directions.clone(),
+        };
+        self.sampler.before_trial(&ctx, self.storage.clone())?;
+
         let joint_params: HashMap<String, (Distribution, f64)> =
             if self.sampler.support_joint_sampling() {
                 let joint_search_space = self
@@ -234,12 +242,6 @@ impl Study {
                     })?
                     .get_joint_search_space(self.id)?;
 
-                let ctx = SamplerContext {
-                    study_id: self.id,
-                    trial_number,
-                    trial_id,
-                    directions: self.directions.clone(),
-                };
                 let params =
                     self.sampler
                         .sample_joint(&ctx, self.storage.clone(), &joint_search_space)?;

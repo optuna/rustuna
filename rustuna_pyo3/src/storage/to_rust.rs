@@ -286,6 +286,14 @@ impl ToRustStorage {
         })
     }
 
+    fn obj_get_trial_number_from_id(&self, trial_id: u32) -> PyResult<u32> {
+        Python::attach(|py| {
+            self.obj
+                .call_method1(py, "get_trial_number_from_id", (trial_id,))?
+                .extract(py)
+        })
+    }
+
     fn obj_get_n_trials(&self, study_id: u32, states: Option<&[TrialState]>) -> PyResult<u32> {
         Python::attach(|py| {
             let kwargs = PyDict::new(py);
@@ -673,6 +681,16 @@ impl Storage for ToRustStorage {
         self.cache.get_cached_trial(trial_id)
     }
 
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> rustuna_core::Result<u32> {
+        match self.cache.get_trial_number_from_id(trial_id) {
+            Ok(trial_number) => Ok(trial_number),
+            Err(error) if matches!(error.kind, rustuna_core::ErrorKind::TrialNotFound) => self
+                .obj_get_trial_number_from_id(trial_id)
+                .map_err(Self::map_pyerr),
+            Err(error) => Err(error),
+        }
+    }
+
     fn get_category_labels(
         &mut self,
         study_id: u32,
@@ -819,15 +837,21 @@ impl PyToRustStorage {
 
     #[pyo3(signature = (study_id, *, states = None))]
     fn get_trials(
-        &mut self,
+        &self,
+        py: Python<'_>,
         study_id: u32,
         states: Option<Vec<PyTrialState>>,
     ) -> PyResult<Vec<PyPersistedTrial>> {
         let storage: Arc<RwLock<dyn Storage>> = self.storage.clone();
-        let mut guard = storage.write().map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
+        let trials = py.detach(|| -> PyResult<Vec<Option<PersistedTrial>>> {
+            let mut guard = storage.write().map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
+            })?;
+            Ok(guard
+                .get_trials(study_id)
+                .map_err(err_to_exceptions)?
+                .clone())
         })?;
-        let trials = guard.get_trials(study_id).map_err(err_to_exceptions)?;
         let py_trials: Vec<PyPersistedTrial> = trials
             .iter()
             .flatten()
@@ -841,15 +865,22 @@ impl PyToRustStorage {
     }
 
     #[pyo3(signature = (study_id, *, states = None))]
-    fn get_n_trials(&mut self, study_id: u32, states: Option<Vec<PyTrialState>>) -> PyResult<u32> {
+    fn get_n_trials(
+        &self,
+        py: Python<'_>,
+        study_id: u32,
+        states: Option<Vec<PyTrialState>>,
+    ) -> PyResult<u32> {
         let storage: Arc<RwLock<dyn Storage>> = self.storage.clone();
-        let mut guard = storage.write().map_err(|e| {
-            PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
-        })?;
         let states =
             states.map(|states| states.into_iter().map(TrialState::from).collect::<Vec<_>>());
-        guard
-            .get_n_trials(study_id, states.as_deref())
-            .map_err(err_to_exceptions)
+        py.detach(|| {
+            let mut guard = storage.write().map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
+            })?;
+            guard
+                .get_n_trials(study_id, states.as_deref())
+                .map_err(err_to_exceptions)
+        })
     }
 }

@@ -10,9 +10,9 @@ use rustuna_core::attr::{
     category_labels_to_attrs, get_category_labels, AttrKey, Attrs, CategoryLabel,
 };
 use rustuna_core::distribution::Distribution;
+use rustuna_core::internal::study_cache::StudyCache;
 use rustuna_core::storage::Storage;
 use rustuna_core::study::{Direction, PersistedStudy};
-use rustuna_core::study_cache::StudyCache;
 use rustuna_core::trial::{PersistedTrial, TrialState, TrialStateValues};
 use rustuna_core::{Error, ErrorKind, Result};
 
@@ -527,6 +527,24 @@ impl Storage for JournalStorage {
                         trial_number,
                         trials.len()
                     ),
+                )
+            })
+    }
+
+    fn get_trial_number_from_id(&mut self, trial_id: u32) -> Result<u32> {
+        if let Some((_, trial_number)) = self.replay.trial_id_to_study_number.get(&trial_id) {
+            return Ok(*trial_number);
+        }
+
+        self.sync_with_backend()?;
+        self.replay
+            .trial_id_to_study_number
+            .get(&trial_id)
+            .map(|(_, trial_number)| *trial_number)
+            .ok_or_else(|| {
+                Error::with_reason(
+                    ErrorKind::TrialNotFound,
+                    format!("Trial not found in storage: trial_id={trial_id}"),
                 )
             })
     }

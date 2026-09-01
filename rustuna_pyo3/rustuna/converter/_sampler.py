@@ -94,6 +94,17 @@ class ToOptunaSampler(BaseSampler):
             external_params[param_name] = external_param_value
         return external_params
 
+    def before_trial(self, study: Study, trial: FrozenTrial) -> None:
+        """Run pre-processing in the Rustuna sampler before search-space inference."""
+        ctx = rustuna.samplers.SamplerContext(
+            study_id=study._study_id,
+            trial_number=trial.number,
+            trial_id=trial._trial_id,
+            directions=to_rustuna_directions(study._directions),
+        )
+        storage = self._get_storage(study._storage)
+        self._sampler.before_trial(ctx, storage)
+
     def sample_independent(
         self,
         study: Study,
