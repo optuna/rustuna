@@ -247,6 +247,16 @@ class StorageProtocol(Protocol):
             The trial.
         """
 
+    def get_trial_number_from_id(self, trial_id: int) -> int:
+        """Get the trial number from a trial ID.
+
+        Args:
+            trial_id: ID of the trial.
+
+        Returns:
+            Number of the trial within its study.
+        """
+
     def get_study_user_attr(self, study_id: int, key: str) -> str:
         """Get a single user attribute of a study.
 
