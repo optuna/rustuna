@@ -28,8 +28,8 @@ impl<'a> ImportanceOptions<'a> {
 
     /// Sets the target value used to evaluate importances.
     ///
-    /// By default, evaluators use the first objective value of each completed trial. For
-    /// multi-objective studies, this target must be specified explicitly.
+    /// By default, the PED-ANOVA evaluator uses the objective value for single-objective studies
+    /// and Pareto-based ranking for multi-objective studies.
     pub fn with_target(mut self, target: &'a dyn Fn(&PersistedTrial) -> f64) -> Self {
         self.target = Some(target);
         self
