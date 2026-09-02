@@ -26,6 +26,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// region explored during optimization or against the full search space. Local evaluation is
 /// especially useful when the effective search region changes during the study.
 ///
+/// For a multi-objective study without an explicit target, trials are ranked by non-domination
+/// rank, and ties within a rank are resolved by hypervolume subset selection (HSSP). To compute
+/// the importance for a single objective instead, specify it with [`ImportanceOptions::with_target`].
+/// [`PedAnovaImportanceEvaluator`] assumes minimization, so negate the target value when the
+/// selected objective is being maximized.
+///
 /// # Examples
 ///
 /// ```no_run
