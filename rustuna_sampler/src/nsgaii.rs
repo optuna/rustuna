@@ -197,7 +197,7 @@ impl NSGAIISampler {
     /// Returns `None` when the cache is stale or incompatible with the current sampler,
     /// allowing the caller to fall back to full recomputation.
     fn decode_parent_population_numbers(
-        completed_trial_numbers_by_id: &HashMap<u32, u32>,
+        mut get_trial_number: impl FnMut(u32) -> Result<Option<u32>>,
         encoded: &str,
         population_size: usize,
     ) -> Result<Option<Vec<u32>>> {
@@ -219,10 +219,10 @@ impl NSGAIISampler {
 
         let mut population_numbers = Vec::with_capacity(trial_ids.len());
         for trial_id in trial_ids {
-            match completed_trial_numbers_by_id.get(&trial_id) {
-                Some(number) => population_numbers.push(*number),
-                None => return Ok(None),
-            }
+            let Some(trial_number) = get_trial_number(trial_id)? else {
+                return Ok(None);
+            };
+            population_numbers.push(trial_number);
         }
         Ok(Some(population_numbers))
     }
@@ -276,49 +276,22 @@ impl NSGAIISampler {
         ctx: &Context,
         trials: &[Option<PersistedTrial>],
         child_generation: u32,
-        get_cached_parent: impl Fn(u32) -> Option<String>,
+        cached_parent: Option<(u32, Vec<u32>)>,
     ) -> Result<(u32, Vec<u32>, Attrs)> {
         if child_generation == 0 {
             return Ok((0, Vec::new(), Attrs::new()));
         }
 
-        // TODO: Persist trial numbers with IDs to avoid rebuilding this map for every sample.
-        let completed_trial_numbers_by_id = trials
-            .iter()
-            .flatten()
-            .filter_map(|trial| {
-                matches!(trial.state_values, TrialStateValues::Complete(_))
-                    .then_some((trial.id, trial.number))
-            })
-            .collect::<HashMap<_, _>>();
-
         // Try to restore the parent population from persisted cache.
-        if let Some(encoded) = get_cached_parent(child_generation) {
-            if let Some(numbers) = Self::decode_parent_population_numbers(
-                &completed_trial_numbers_by_id,
-                &encoded,
-                self.population_size,
-            )? {
-                return Ok((child_generation, numbers, Attrs::new()));
-            }
-        }
-
-        // Cache miss or stale: find the most recent cached generation to start from.
-        let mut first_missing_generation = 1u32;
-        let mut parent_population_numbers = Vec::new();
-        for gen in (1..child_generation).rev() {
-            if let Some(encoded) = get_cached_parent(gen) {
-                if let Some(numbers) = Self::decode_parent_population_numbers(
-                    &completed_trial_numbers_by_id,
-                    &encoded,
-                    self.population_size,
-                )? {
-                    first_missing_generation = gen + 1;
-                    parent_population_numbers = numbers;
-                    break;
+        let (first_missing_generation, mut parent_population_numbers) =
+            if let Some((generation, numbers)) = cached_parent {
+                if generation == child_generation {
+                    return Ok((child_generation, numbers, Attrs::new()));
                 }
-            }
-        }
+                (generation + 1, numbers)
+            } else {
+                (1, Vec::new())
+            };
 
         // Recompute elite selection for each missing generation.
         let mut new_attrs = Attrs::new();
@@ -459,10 +432,52 @@ impl Sampler for NSGAIISampler {
 
             let study_attrs = guard.get_study(ctx.study_id)?.attrs.clone();
 
+            let cached_parent = if child_generation == 0 {
+                None
+            } else {
+                // get_child_generation calls get_trials above, which synchronizes this study's
+                // trials into the storage cache. Resolve only the persisted parent IDs from that
+                // cache instead of rebuilding an ID-to-number map from every completed trial.
+                let mut cached_parent = None;
+                for generation in (1..=child_generation).rev() {
+                    let Some(encoded) = study_attrs.get(&Self::parent_cache_key(generation)) else {
+                        continue;
+                    };
+                    let numbers = Self::decode_parent_population_numbers(
+                        |trial_id| match guard.get_cached_trial(trial_id) {
+                            Ok(trial)
+                                if trial.study_id == ctx.study_id
+                                    && matches!(
+                                        trial.state_values,
+                                        TrialStateValues::Complete(_)
+                                    ) =>
+                            {
+                                Ok(Some(trial.number))
+                            }
+                            Ok(_) => Ok(None),
+                            Err(error)
+                                if matches!(
+                                    &error.kind,
+                                    ErrorKind::TrialNotFound | ErrorKind::TrialDiscarded
+                                ) =>
+                            {
+                                Ok(None)
+                            }
+                            Err(error) => Err(error),
+                        },
+                        encoded,
+                        self.population_size,
+                    )?;
+                    if let Some(numbers) = numbers {
+                        cached_parent = Some((generation, numbers));
+                        break;
+                    }
+                }
+                cached_parent
+            };
+
             let trials = guard.get_trials(ctx.study_id)?;
-            self.get_parent_population_numbers(ctx, trials, child_generation, |gen| {
-                study_attrs.get(&Self::parent_cache_key(gen)).cloned()
-            })?
+            self.get_parent_population_numbers(ctx, trials, child_generation, cached_parent)?
         };
         let mut attrs = Attrs::with_capacity(1);
         attrs.insert(
@@ -1114,7 +1129,7 @@ mod tests {
     fn test_parent_population_cache_preserves_parent_order() {
         let completed_trial_numbers_by_id = HashMap::from([(10, 2), (20, 0), (30, 1)]);
         let population_numbers = NSGAIISampler::decode_parent_population_numbers(
-            &completed_trial_numbers_by_id,
+            |trial_id| Ok(completed_trial_numbers_by_id.get(&trial_id).copied()),
             "[10,20,30]",
             3,
         )
