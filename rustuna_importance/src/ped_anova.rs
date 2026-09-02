@@ -505,6 +505,23 @@ mod tests {
     }
 
     #[test]
+    fn test_get_top_quantile_trials_multi_objective_without_target() -> Result<()> {
+        let study = test_utils::get_study(42, 20, ObjectiveType::Multi, Direction::Minimize)?;
+        let trials = common::get_filtered_trials(&study, None)?;
+        let evaluator = PedAnovaImportanceEvaluator::new(0.1, 0.5, true)?;
+
+        let target_trials = evaluator.get_top_quantile_trials(&study, &trials, 0.1, None);
+        let region_trials = evaluator.get_top_quantile_trials(&study, &trials, 0.5, None);
+        let target_ids = target_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+        let region_ids = region_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+
+        assert_eq!(target_trials.len(), 2);
+        assert_eq!(region_trials.len(), 10);
+        assert!(target_ids.is_subset(&region_ids));
+        Ok(())
+    }
+
+    #[test]
     fn test_evaluate_on_local() -> Result<()> {
         let study = test_utils::get_study(42, 20, ObjectiveType::Single, Direction::Minimize)?;
         let evaluator_default = PedAnovaImportanceEvaluator::default();
