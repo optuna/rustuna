@@ -39,27 +39,61 @@ impl Default for TpeConfig {
 
 type SplitKey = (Vec<u32>, usize);
 type SplitValue = (HashSet<u32>, HashSet<u32>);
+/// Keyed by `(study_id, trial_id)`; `None` records that fewer than
+/// `n_startup_trials` usable completed trials existed when the trial started.
+type ObservationsCache = HashMap<(u32, u32), Option<Arc<TpeObservationSet>>>;
+
+/// Upper bound on cached per-trial snapshots; trials returned from `ask` that
+/// never reach `tell` would otherwise leak their entry.
+const OBSERVATIONS_CACHE_CAP: usize = 64;
 
 /// Owned, columnar snapshot of the usable completed trials, copied out of the
 /// storage so the storage guard can be dropped before the TPE model is built.
-/// Row `i` describes one completed trial; rows are in storage order. The flat
-/// layout keeps the copy under the storage guard to a handful of allocations
-/// regardless of the trial count.
-struct TpeObservations {
+/// Row `i` describes one completed trial; rows are in storage order. The
+/// snapshot is search-space independent: it carries a column for every
+/// parameter observed in a usable completed trial, so one copy per trial
+/// serves every suggestion of that trial.
+struct TpeObservationSet {
     trial_numbers: Vec<u32>,
     /// Objective values, `n_objectives` slots per row.
     values: Vec<f64>,
     n_objectives: usize,
-    /// Parameter values in sorted-key order of the requested search space,
-    /// `n_params` slots per row; `None` where the trial did not observe that
-    /// parameter.
-    params: Vec<Option<f64>>,
-    n_params: usize,
+    /// Parameter columns keyed by name, one slot per row; `None` where the
+    /// trial did not observe that parameter.
+    param_columns: HashMap<String, Vec<Option<f64>>>,
     /// Constraint feasibility and total violation of row `i`.
     feasibles_violations: Vec<(bool, f64)>,
 }
 
-impl TpeObservations {
+/// Borrowed projection of a [`TpeObservationSet`] onto one search space.
+/// `param_columns` is in sorted-key order of the search space; `None` marks a
+/// parameter that no trial in the snapshot observed.
+struct TpeObservationsView<'a> {
+    trial_numbers: &'a [u32],
+    values: &'a [f64],
+    n_objectives: usize,
+    param_columns: Vec<Option<&'a [Option<f64>]>>,
+    feasibles_violations: &'a [(bool, f64)],
+}
+
+impl TpeObservationSet {
+    fn view(&self, search_space: &HashMap<String, Distribution>) -> TpeObservationsView<'_> {
+        let mut sorted_keys: Vec<&String> = search_space.keys().collect();
+        sorted_keys.sort();
+        TpeObservationsView {
+            trial_numbers: &self.trial_numbers,
+            values: &self.values,
+            n_objectives: self.n_objectives,
+            param_columns: sorted_keys
+                .iter()
+                .map(|name| self.param_columns.get(*name).map(Vec::as_slice))
+                .collect(),
+            feasibles_violations: &self.feasibles_violations,
+        }
+    }
+}
+
+impl TpeObservationsView<'_> {
     fn len(&self) -> usize {
         self.trial_numbers.len()
     }
@@ -68,8 +102,8 @@ impl TpeObservations {
         &self.values[row * self.n_objectives..(row + 1) * self.n_objectives]
     }
 
-    fn params_row(&self, row: usize) -> &[Option<f64>] {
-        &self.params[row * self.n_params..(row + 1) * self.n_params]
+    fn param_at(&self, row: usize, param_idx: usize) -> Option<f64> {
+        self.param_columns[param_idx].and_then(|col| col[row])
     }
 }
 
@@ -132,6 +166,11 @@ pub struct TpeSampler {
     random_sampler: RandomSampler,
     // TODO(y0z): Change to LruCache<(Vec<&PersistedTrial>, usize), (Vec<&PersistedTrial>, Vec<&PersistedTrial>)>
     split_cache: RwLock<HashMap<SplitKey, SplitValue>>,
+    /// Per-trial snapshot built in `before_trial` and dropped in `after_trial`.
+    /// Locks are never nested: the storage guard is dropped before this lock
+    /// is taken, and the read guard is dropped (the `Arc` cloned out) before
+    /// the TPE model is built.
+    observations_cache: RwLock<ObservationsCache>,
 }
 impl Default for TpeSampler {
     fn default() -> Self {
@@ -152,6 +191,7 @@ impl TpeSampler {
             n_startup_trials: cfg.n_startup_trials,
             random_sampler: RandomSampler::seed_from_u64(seed_for_random_sampler),
             split_cache: RwLock::new(HashMap::new()),
+            observations_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -179,7 +219,7 @@ impl TpeSampler {
     fn sample(
         &self,
         ctx: &Context,
-        observations: &TpeObservations,
+        observations: &TpeObservationsView<'_>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
         let n = observations.len();
@@ -198,7 +238,7 @@ impl TpeSampler {
         } else {
             let directions: &[Direction] = &ctx.directions;
             let gamma = Self::gamma_for_multi_objective(n);
-            let split_cache_key = (observations.trial_numbers.clone(), gamma);
+            let split_cache_key = (observations.trial_numbers.to_vec(), gamma);
             let cached_split = self
                 .split_cache
                 .read()
@@ -226,7 +266,7 @@ impl TpeSampler {
                     let (good_rows, poor_rows) =
                         multi_objective::split_observation_indices_for_multi_objective(
                             &value_rows,
-                            &observations.feasibles_violations,
+                            observations.feasibles_violations,
                             directions,
                             gamma,
                         );
@@ -279,7 +319,7 @@ impl TpeSampler {
     }
 
     fn split_rows_for_single_objective(
-        observations: &TpeObservations,
+        observations: &TpeObservationsView<'_>,
         direction: &Direction,
         gamma: usize,
     ) -> (Vec<usize>, Vec<usize>) {
@@ -352,7 +392,7 @@ impl TpeSampler {
         (0.1 * n as f64).ceil() as usize
     }
 
-    /// Counts the trials that [`Self::snapshot_usable_complete_trials`] would
+    /// Counts the trials that [`Self::snapshot_observation_set`] would
     /// keep: only trials whose `Complete` values are fully finite-or-±inf.
     /// Trials carrying NaN are dropped here, before the `n_startup_trials`
     /// gate, so they neither inflate `gamma` nor leak into the good rows. In
@@ -375,23 +415,18 @@ impl TpeSampler {
     /// [`Self::count_usable_complete_trials`], in storage order) into owned
     /// observations so the storage guard can be dropped before the TPE model
     /// is built. `n_usable` is that count, used to size the buffers up front.
-    /// Parameter values are captured in sorted-key order of `search_space`;
-    /// constraint feasibility is evaluated per trial.
-    fn snapshot_usable_complete_trials(
+    /// Every observed parameter is captured; constraint feasibility is
+    /// evaluated per trial.
+    fn snapshot_observation_set(
         trials: &[Option<rustuna_core::trial::PersistedTrial>],
-        search_space: &HashMap<String, Distribution>,
         n_objectives: usize,
         n_usable: usize,
-    ) -> Result<TpeObservations> {
-        let mut sorted_keys = search_space.keys().collect::<Vec<_>>();
-        sorted_keys.sort();
-        let n_params = sorted_keys.len();
-        let mut observations = TpeObservations {
+    ) -> Result<TpeObservationSet> {
+        let mut observations = TpeObservationSet {
             trial_numbers: Vec::with_capacity(n_usable),
             values: Vec::with_capacity(n_usable * n_objectives),
             n_objectives,
-            params: Vec::with_capacity(n_usable * n_params),
-            n_params,
+            param_columns: HashMap::new(),
             feasibles_violations: Vec::with_capacity(n_usable),
         };
         for trial in trials.iter().flatten() {
@@ -415,18 +450,82 @@ impl TpeSampler {
             let constraints = trial.constraints()?;
             let feasible = constraints.values().all(|x| *x <= 0.0);
             let violation = constraints.values().filter(|&x| *x > 0.0).sum::<f64>();
+            let row = observations.trial_numbers.len();
             observations.trial_numbers.push(trial.number);
             observations.values.extend_from_slice(values);
-            for name in &sorted_keys {
-                observations
-                    .params
-                    .push(trial.internal_params.get(*name).copied());
+            for (name, value) in &trial.internal_params {
+                if let Some(column) = observations.param_columns.get_mut(name) {
+                    column.resize(row, None);
+                    column.push(Some(*value));
+                } else {
+                    let mut column = Vec::with_capacity(n_usable);
+                    column.resize(row, None);
+                    column.push(Some(*value));
+                    observations.param_columns.insert(name.clone(), column);
+                }
             }
             observations
                 .feasibles_violations
                 .push((feasible, violation));
         }
+        let n_rows = observations.trial_numbers.len();
+        for column in observations.param_columns.values_mut() {
+            column.resize(n_rows, None);
+        }
         Ok(observations)
+    }
+
+    /// Snapshots the observations directly from the storage, or `None` while
+    /// the usable trial count is below `n_startup_trials`. The storage guard
+    /// is held only while copying; the TPE model construction runs without
+    /// any storage lock so concurrent trials can keep reading and writing the
+    /// storage meanwhile.
+    fn snapshot_from_storage(
+        &self,
+        ctx: &Context,
+        storage: &Arc<RwLock<dyn Storage>>,
+    ) -> Result<Option<TpeObservationSet>> {
+        let mut guard = storage.write().map_err(|e| {
+            Error::with_reason(
+                ErrorKind::Unexpected,
+                format!("Failed to acquire storage guard: {e}"),
+            )
+        })?;
+        let trials = guard.get_trials(ctx.study_id)?;
+        let n_usable = Self::count_usable_complete_trials(trials);
+        if n_usable < self.n_startup_trials {
+            return Ok(None);
+        }
+        Ok(Some(Self::snapshot_observation_set(
+            trials,
+            ctx.directions.len(),
+            n_usable,
+        )?))
+    }
+
+    /// Returns the trial's cached snapshot, falling back to a direct storage
+    /// snapshot when `before_trial` did not run for this trial. `None` means
+    /// fewer than `n_startup_trials` usable completed trials were available.
+    fn observations_for_trial(
+        &self,
+        ctx: &Context,
+        storage: &Arc<RwLock<dyn Storage>>,
+    ) -> Result<Option<Arc<TpeObservationSet>>> {
+        let cached = self
+            .observations_cache
+            .read()
+            .map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::SamplerError,
+                    format!("Failed to acquire observations cache guard: {e}"),
+                )
+            })?
+            .get(&(ctx.study_id, ctx.trial_id))
+            .cloned();
+        match cached {
+            Some(observations) => Ok(observations),
+            None => Ok(self.snapshot_from_storage(ctx, storage)?.map(Arc::new)),
+        }
     }
 
     fn weights_for_single_objective(x: usize) -> Vec<f64> {
@@ -458,7 +557,7 @@ impl TpeSampler {
     }
 
     fn build_parzen_estimator(
-        observations: &TpeObservations,
+        observations: &TpeObservationsView<'_>,
         rows: &[usize],
         search_space: &HashMap<String, Distribution>,
         recency_ramp: bool,
@@ -468,7 +567,7 @@ impl TpeSampler {
 
         let n_params = sorted_keys.len();
         let n_trials = rows.len();
-        debug_assert_eq!(n_params, observations.n_params);
+        debug_assert_eq!(n_params, observations.param_columns.len());
 
         // Process trials in chronological (trial-number ascending) order so that the
         // recency ramp assigns the highest weights to the most recent trials, matching
@@ -483,9 +582,9 @@ impl TpeSampler {
         let mut active_counts: Vec<u32> = vec![0; n_trials];
 
         for (trial_idx, &row) in order.iter().enumerate() {
-            for (param_idx, param) in observations.params_row(row).iter().enumerate() {
-                if let Some(v) = param {
-                    observations_vec[param_idx].push(*v);
+            for (param_idx, column) in observations_vec.iter_mut().enumerate() {
+                if let Some(v) = observations.param_at(row, param_idx) {
+                    column.push(v);
                     active_counts[trial_idx] += 1;
                 }
             }
@@ -514,6 +613,25 @@ impl TpeSampler {
 }
 
 impl Sampler for TpeSampler {
+    fn before_trial(&self, ctx: &Context, storage: Arc<RwLock<dyn Storage>>) -> Result<()> {
+        let observations = self.snapshot_from_storage(ctx, &storage)?.map(Arc::new);
+        let mut cache = self.observations_cache.write().map_err(|e| {
+            Error::with_reason(
+                ErrorKind::SamplerError,
+                format!("Failed to acquire observations cache guard: {e}"),
+            )
+        })?;
+        cache.insert((ctx.study_id, ctx.trial_id), observations);
+        // Trial ids grow monotonically, so the smallest id is the oldest entry.
+        while cache.len() > OBSERVATIONS_CACHE_CAP {
+            let Some(&oldest) = cache.keys().min_by_key(|(_, trial_id)| *trial_id) else {
+                break;
+            };
+            cache.remove(&oldest);
+        }
+        Ok(())
+    }
+
     fn sample_independent(
         &self,
         ctx: &Context,
@@ -526,35 +644,13 @@ impl Sampler for TpeSampler {
         }
 
         let search_space = HashMap::from([(name.to_string(), distribution.clone())]);
-        // Hold the storage guard only while copying the observations; the TPE
-        // model construction below runs without any storage lock so concurrent
-        // trials can keep reading and writing the storage meanwhile.
-        let observations = {
-            let mut guard = storage.write().map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::Unexpected,
-                    format!("Failed to acquire storage guard: {e}"),
-                )
-            })?;
-            let trials = guard.get_trials(ctx.study_id)?;
-            let n_usable = Self::count_usable_complete_trials(trials);
-            if n_usable >= self.n_startup_trials {
-                Some(Self::snapshot_usable_complete_trials(
-                    trials,
-                    &search_space,
-                    ctx.directions.len(),
-                    n_usable,
-                )?)
-            } else {
-                None
-            }
+        let Some(observations) = self.observations_for_trial(ctx, &storage)? else {
+            return self
+                .random_sampler
+                .sample_independent(ctx, storage, name, distribution);
         };
-        if let Some(observations) = observations {
-            let params = self.sample(ctx, &observations, &search_space)?;
-            return Ok(params[name]);
-        }
-        self.random_sampler
-            .sample_independent(ctx, storage, name, distribution)
+        let params = self.sample(ctx, &observations.view(&search_space), &search_space)?;
+        Ok(params[name])
     }
 
     fn support_joint_sampling(&self) -> bool {
@@ -585,38 +681,27 @@ impl Sampler for TpeSampler {
             return Ok(HashMap::new());
         }
 
-        // Hold the storage guard only while copying the observations; the TPE
-        // model construction below runs without any storage lock so concurrent
-        // trials can keep reading and writing the storage meanwhile.
-        let observations = {
-            let mut guard = storage.write().map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::Unexpected,
-                    format!("Failed to acquire storage guard: {e}"),
-                )
-            })?;
-            let trials = guard.get_trials(ctx.study_id)?;
-            let n_usable = Self::count_usable_complete_trials(trials);
-            if n_usable < self.n_startup_trials {
-                return Ok(HashMap::new());
-            }
-            Self::snapshot_usable_complete_trials(
-                trials,
-                search_space,
-                ctx.directions.len(),
-                n_usable,
-            )?
+        let Some(observations) = self.observations_for_trial(ctx, &storage)? else {
+            return Ok(HashMap::new());
         };
-
-        self.sample(ctx, &observations, search_space)
+        self.sample(ctx, &observations.view(search_space), search_space)
     }
 
     fn after_trial(
         &self,
-        _ctx: &Context,
+        ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
         _state_values: &TrialStateValues,
     ) -> Result<()> {
+        self.observations_cache
+            .write()
+            .map_err(|e| {
+                Error::with_reason(
+                    ErrorKind::SamplerError,
+                    format!("Failed to acquire observations cache guard: {e}"),
+                )
+            })?
+            .remove(&(ctx.study_id, ctx.trial_id));
         Ok(())
     }
 }
@@ -1099,6 +1184,170 @@ mod tests {
         assert!(trials
             .iter()
             .all(|t| matches!(t.state_values, TrialStateValues::Complete(_))));
+    }
+
+    /// A trial served from the `before_trial` cache must sample exactly what
+    /// a direct storage snapshot would, including for a parameter no trial
+    /// has observed.
+    #[test]
+    fn test_before_trial_cache_matches_direct_sampling() {
+        let storage = InMemoryStorage::new();
+        let study = create_study(
+            "cache-equality",
+            storage,
+            TpeSampler::seed_from_u64(0),
+            vec![Direction::Minimize],
+        )
+        .unwrap();
+        study
+            .optimize(
+                |mut t| {
+                    let x = t.suggest_float("x", 0.0, 10.0)?;
+                    let y = t.suggest_float("y", 0.0, 10.0)?;
+                    Ok(vec![(x - 3.0).powi(2) + (y - 5.0).powi(2)])
+                },
+                15,
+            )
+            .unwrap();
+
+        let ctx = Context {
+            study_id: study.id,
+            directions: vec![Direction::Minimize],
+            trial_number: 15,
+            trial_id: 999,
+        };
+        let distribution = Distribution::new_float(0.0, 10.0, None, false);
+        let cached = TpeSampler::seed_from_u64(7);
+        let direct = TpeSampler::seed_from_u64(7);
+        cached.before_trial(&ctx, study.storage.clone()).unwrap();
+        for name in ["x", "y", "unobserved"] {
+            let a = cached
+                .sample_independent(&ctx, study.storage.clone(), name, &distribution)
+                .unwrap();
+            let b = direct
+                .sample_independent(&ctx, study.storage.clone(), name, &distribution)
+                .unwrap();
+            assert_eq!(a, b);
+            assert!((0.0..=10.0).contains(&a));
+        }
+        let search_space = HashMap::from([
+            ("x".to_string(), distribution.clone()),
+            ("y".to_string(), distribution.clone()),
+        ]);
+        assert_eq!(
+            cached
+                .sample_joint(&ctx, study.storage.clone(), &search_space)
+                .unwrap(),
+            direct
+                .sample_joint(&ctx, study.storage.clone(), &search_space)
+                .unwrap()
+        );
+    }
+
+    /// `before_trial` inserts the snapshot (or `None` when fewer than
+    /// `n_startup_trials` trials are completed), `after_trial` removes it,
+    /// and the cache never grows past its cap.
+    #[test]
+    fn test_observations_cache_lifecycle() {
+        let storage = InMemoryStorage::new();
+        let study = create_study(
+            "cache-lifecycle",
+            storage,
+            TpeSampler::seed_from_u64(0),
+            vec![Direction::Minimize],
+        )
+        .unwrap();
+        let probe = TpeSampler::from_config(TpeConfig {
+            multivariate: None,
+            n_startup_trials: 1,
+            seed: Some(0),
+        });
+        let ctx = |trial_id: u32| Context {
+            study_id: study.id,
+            directions: vec![Direction::Minimize],
+            trial_number: trial_id,
+            trial_id,
+        };
+
+        probe
+            .before_trial(&ctx(100), study.storage.clone())
+            .unwrap();
+        assert!(matches!(
+            probe
+                .observations_cache
+                .read()
+                .unwrap()
+                .get(&(study.id, 100)),
+            Some(None)
+        ));
+
+        study
+            .optimize(|mut t| Ok(vec![t.suggest_float("x", 0.0, 1.0)?]), 2)
+            .unwrap();
+        probe
+            .before_trial(&ctx(101), study.storage.clone())
+            .unwrap();
+        assert!(matches!(
+            probe
+                .observations_cache
+                .read()
+                .unwrap()
+                .get(&(study.id, 101)),
+            Some(Some(_))
+        ));
+
+        probe
+            .after_trial(
+                &ctx(101),
+                study.storage.clone(),
+                &TrialStateValues::Complete(vec![0.0]),
+            )
+            .unwrap();
+        assert!(!probe
+            .observations_cache
+            .read()
+            .unwrap()
+            .contains_key(&(study.id, 101)));
+
+        for trial_id in 200..(200 + OBSERVATIONS_CACHE_CAP as u32 + 5) {
+            probe
+                .before_trial(&ctx(trial_id), study.storage.clone())
+                .unwrap();
+        }
+        let cache = probe.observations_cache.read().unwrap();
+        assert_eq!(cache.len(), OBSERVATIONS_CACHE_CAP);
+        // The oldest entries (smallest trial ids) were evicted first.
+        assert!(!cache.contains_key(&(study.id, 100)));
+        assert!(cache.contains_key(&(study.id, 200 + OBSERVATIONS_CACHE_CAP as u32 + 4)));
+    }
+
+    /// A malformed constraint attr makes the snapshot fail, which surfaces
+    /// from `before_trial` and thus from `Study::ask`.
+    #[test]
+    fn test_malformed_constraint_fails_ask() {
+        use rustuna_core::attr::{AttrKey, Attrs};
+
+        let storage = InMemoryStorage::new();
+        let sampler = TpeSampler::from_config(TpeConfig {
+            multivariate: None,
+            n_startup_trials: 1,
+            seed: Some(0),
+        });
+        let study = create_study(
+            "bad-constraints",
+            storage,
+            sampler,
+            vec![Direction::Minimize],
+        )
+        .unwrap();
+        let mut trial = rustuna_core::trial::PersistedTrial::new(0, study.id, 0);
+        trial.state_values = TrialStateValues::Complete(vec![0.0]);
+        trial.attrs = Attrs::from([(
+            AttrKey::System("constraints:c0".into()),
+            "broken".to_string(),
+        )]);
+        study.add_trial(trial).unwrap();
+        assert!(study.ask().is_err());
     }
 
     #[test]
