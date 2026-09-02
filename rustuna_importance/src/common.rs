@@ -156,27 +156,28 @@ mod tests {
     use rustuna_core::storage::InMemoryStorage;
     use rustuna_core::study::{self, Direction};
     use rustuna_core::trial::PersistedTrial;
-    use rustuna_core::{ErrorKind, Result};
+    use rustuna_core::Result;
     use std::collections::HashSet;
 
     #[test]
-    fn test_error_multi_objective_wo_target() -> Result<()> {
+    fn test_get_param_importances_multi_objective_without_target() -> Result<()> {
         let evaluators = vec![PedAnovaImportanceEvaluator::default()];
-        let study = test_utils::get_study(42, 5, ObjectiveType::Multi, Direction::Minimize)?;
+        let study = test_utils::get_study(42, 20, ObjectiveType::Multi, Direction::Minimize)?;
         for evaluator in evaluators {
-            let err = get_param_importances(&study, &evaluator).unwrap_err();
-            assert!(matches!(err.kind, ErrorKind::ImportanceEvaluatorError));
+            let importances = get_param_importances(&study, &evaluator)?;
+            assert_eq!(importances.len(), 6, "{importances:?}");
+            assert!((importances.values().sum::<f64>() - 1.0).abs() < 1e-12);
         }
         Ok(())
     }
 
     #[test]
-    fn test_evaluator_error_multi_objective_wo_target() -> Result<()> {
+    fn test_evaluator_multi_objective_without_target() -> Result<()> {
         let evaluators = vec![PedAnovaImportanceEvaluator::default()];
-        let study = test_utils::get_study(42, 5, ObjectiveType::Multi, Direction::Minimize)?;
+        let study = test_utils::get_study(42, 20, ObjectiveType::Multi, Direction::Minimize)?;
         for evaluator in evaluators {
-            let err = evaluator.evaluate(&study).unwrap_err();
-            assert!(matches!(err.kind, ErrorKind::ImportanceEvaluatorError));
+            let importances = evaluator.evaluate(&study)?;
+            assert_eq!(importances.len(), 6, "{importances:?}");
         }
         Ok(())
     }
