@@ -84,9 +84,19 @@ impl PyTpeSampler {
         })
     }
 
-    fn before_trial(&self, ctx: &PySamplerContext, storage: Py<PyAny>) -> PyResult<()> {
-        let _ = (ctx, storage);
-        Ok(())
+    fn before_trial(
+        &self,
+        py: Python<'_>,
+        ctx: &PySamplerContext,
+        storage: Py<PyAny>,
+    ) -> PyResult<()> {
+        let arc_storage = extract_storage(storage)?;
+        let context = ctx.context.clone();
+        py.detach(|| {
+            self.sampler
+                .before_trial(&context, arc_storage)
+                .map_err(|e| PyRuntimeError::new_err(format!("Failed to call before_trial: {e:?}")))
+        })
     }
 
     #[pyo3(signature = (ctx, storage, state, values = None))]
