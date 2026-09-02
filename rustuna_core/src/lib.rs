@@ -8,7 +8,6 @@ pub use error::{Error, ErrorKind};
 
 pub mod attr;
 pub mod distribution;
-pub mod multi_objective; // TODO(kAIto47802): Move this into the `internal` module.
 pub mod sampler;
 pub mod storage;
 pub mod study;
@@ -21,6 +20,7 @@ mod error;
 mod parzen_estimator;
 mod string_interner;
 mod study_cache;
+mod multi_objective;
 
 /// Implementation details shared by Rustuna crates.
 ///
@@ -37,6 +37,9 @@ pub mod internal {
     }
     pub mod datetime {
         pub use crate::datetime::now_naive_utc;
+    }
+    pub mod multi_objective {
+        pub use crate::multi_objective::*;
     }
 }
 
