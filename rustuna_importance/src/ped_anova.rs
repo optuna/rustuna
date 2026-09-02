@@ -506,18 +506,82 @@ mod tests {
 
     #[test]
     fn test_get_top_quantile_trials_multi_objective_without_target() -> Result<()> {
-        let study = test_utils::get_study(42, 20, ObjectiveType::Multi, Direction::Minimize)?;
-        let trials = common::get_filtered_trials(&study, None)?;
-        let evaluator = PedAnovaImportanceEvaluator::new(0.1, 0.5, true)?;
+        let cases = [
+            (
+                "different-nondomination-ranks",
+                vec![Direction::Minimize, Direction::Minimize],
+                (0..6).map(|i| vec![i as f64, i as f64]).collect(),
+                0.5,
+                0.8,
+                3,
+                5,
+            ),
+            (
+                "same-rank-hssp-tie-break-after-best-rank",
+                vec![Direction::Minimize, Direction::Minimize],
+                vec![
+                    vec![0.0, 0.0],
+                    vec![1.0, 5.0],
+                    vec![2.0, 4.0],
+                    vec![3.0, 3.0],
+                    vec![4.0, 2.0],
+                    vec![5.0, 1.0],
+                    vec![6.0, 6.0],
+                    vec![7.0, 7.0],
+                ],
+                0.5,
+                0.75,
+                4,
+                6,
+            ),
+            (
+                "same-rank-hssp-tie-break-on-front",
+                vec![Direction::Minimize, Direction::Minimize],
+                (0..6).map(|i| vec![i as f64, (5 - i) as f64]).collect(),
+                0.5,
+                0.8,
+                3,
+                5,
+            ),
+        ];
 
-        let target_trials = evaluator.get_top_quantile_trials(&study, &trials, 0.1, None);
-        let region_trials = evaluator.get_top_quantile_trials(&study, &trials, 0.5, None);
-        let target_ids = target_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
-        let region_ids = region_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+        for (
+            name,
+            directions,
+            values,
+            target_quantile,
+            region_quantile,
+            expected_target_size,
+            expected_region_size,
+        ) in cases {
+            let study = create_study(
+                name,
+                InMemoryStorage::new(),
+                RandomSampler::new(),
+                directions,
+            )?;
+            for (number, objective_values) in values.into_iter().enumerate() {
+                let mut trial = PersistedTrial::new(number as u32, study.id, number as u32);
+                trial.state_values = TrialStateValues::Complete(objective_values);
+                study.add_trial(trial)?;
+            }
+            let trials = common::get_filtered_trials(&study, None)?;
+            let evaluator =
+                PedAnovaImportanceEvaluator::new(target_quantile, region_quantile, true)?;
 
-        assert_eq!(target_trials.len(), 2);
-        assert_eq!(region_trials.len(), 10);
-        assert!(target_ids.is_subset(&region_ids));
+            let target_trials =
+                evaluator.get_top_quantile_trials(&study, &trials, target_quantile, None);
+            let region_trials =
+                evaluator.get_top_quantile_trials(&study, &trials, region_quantile, None);
+            let target_ids = target_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+            let region_ids = region_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+
+            assert_eq!(target_trials.len(), expected_target_size, "{name}");
+            assert_eq!(region_trials.len(), expected_region_size, "{name}");
+            // Since HSSP is approximately implemented using a greedy algorithm, target trials
+            // are guaranteed to be included in region trials.
+            assert!(target_ids.is_subset(&region_ids), "{name}");
+        }
         Ok(())
     }
 
