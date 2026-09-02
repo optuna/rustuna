@@ -581,8 +581,11 @@ def get_param_importances(
         target:
             A function that returns the value used to evaluate importances.
             If `None`, objective values are used for single-objective optimization.
-            For multi-objective optimization, this argument must be specified to return
-            a single float value for each trial.
+            For multi-objective optimization, top trials are selected by non-domination rank
+            and hypervolume subset selection. The resulting importance can be
+            interpreted as how important each hyperparameter is to reach the Pareto
+            front without preference for any particular objective.
+            To evaluate one objective, return it from this function.
         normalize:
             A boolean option to specify whether the sum of the importance values should be
             normalized to 1.0.
