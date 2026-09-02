@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "rustuna_core"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "js-sys",
  "rand",
@@ -444,14 +444,14 @@ dependencies = [
 
 [[package]]
 name = "rustuna_importance"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "rustuna_core",
 ]
 
 [[package]]
 name = "rustuna_js"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "getrandom",
  "js-sys",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "rustuna_pyo3"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "pyo3",
  "rustuna_core",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "rustuna_sampler"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "rand",
  "rustuna_core",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "rustuna_storage"
-version = "0.1.0"
+version = "0.1.0-dev"
 dependencies = [
  "libc",
  "rusqlite",

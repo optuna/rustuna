@@ -19,7 +19,7 @@ inherits = "release"
 debug = false
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-dev"
 edition = "2021"
 description = "A Rust implementation of Optuna"
 repository = "https://github.com/optuna/rustuna"
