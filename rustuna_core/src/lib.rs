@@ -17,10 +17,10 @@ pub mod trial_queue;
 
 mod datetime;
 mod error;
+mod multi_objective;
 mod parzen_estimator;
 mod string_interner;
 mod study_cache;
-mod multi_objective;
 
 /// Implementation details shared by Rustuna crates.
 ///
