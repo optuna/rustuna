@@ -135,8 +135,11 @@ pub(crate) fn get_filtered_trials(
         .get_trials(study.id)?
         .iter()
         .flatten()
-        .filter(|t| matches!(t.state_values, TrialStateValues::Complete(_)))
-        .filter(|t| resolve_target(target)(t).is_finite())
+        .filter(|t| match (&t.state_values, target) {
+            (TrialStateValues::Complete(_), Some(target)) => target(t).is_finite(),
+            (TrialStateValues::Complete(values), None) => values.iter().all(|v| v.is_finite()),
+            _ => false,
+        })
         .cloned()
         .collect::<Vec<_>>();
     Ok(completed_trials)
