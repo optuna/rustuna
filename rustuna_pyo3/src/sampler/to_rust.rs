@@ -189,15 +189,6 @@ impl Sampler for ToRustSampler {
             )
         })?;
         Python::attach(|py| {
-            if !obj.bind(py).hasattr("after_trial").map_err(|e| {
-                rustuna_core::Error::with_reason(
-                    rustuna_core::ErrorKind::SamplerError,
-                    e.to_string(),
-                )
-            })? {
-                return Ok(());
-            }
-
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
             obj.call_method1(py, "after_trial", (py_ctx, py_storage, py_state, py_values))

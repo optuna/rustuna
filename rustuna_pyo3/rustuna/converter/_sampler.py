@@ -155,10 +155,6 @@ class ToOptunaSampler(BaseSampler):
         values: Sequence[float] | None,
     ) -> None:
         """Notify the Rustuna sampler that a trial has finished."""
-        after_trial = getattr(self._sampler, "after_trial", None)
-        if after_trial is None:
-            return
-
         ctx = rustuna.samplers.SamplerContext(
             study_id=study._study_id,
             trial_number=trial.number,
@@ -166,7 +162,7 @@ class ToOptunaSampler(BaseSampler):
             directions=to_rustuna_directions(study._directions),
         )
         storage = self._get_storage(study._storage)
-        after_trial(
+        self._sampler.after_trial(
             ctx,
             storage,
             to_rustuna_state(state),

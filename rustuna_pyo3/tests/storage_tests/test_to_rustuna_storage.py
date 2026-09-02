@@ -159,6 +159,15 @@ class DummyJointSampler:
             return 0.0
         assert False, "Unreachable code"
 
+    def after_trial(
+        self,
+        ctx: rustuna.samplers.SamplerContext,
+        storage: rustuna.storages.StorageProtocol,
+        state: rustuna.trial.TrialState,
+        values: list[float] | None = None,
+    ) -> None:
+        pass
+
 
 def test_storage_cache_joint_search_space():
     def objective(trial: rustuna.Trial) -> float:
