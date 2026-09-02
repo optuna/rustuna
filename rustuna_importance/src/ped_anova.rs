@@ -221,7 +221,6 @@ impl ImportanceEvaluator for PedAnovaImportanceEvaluator {
         opts: ImportanceOptions,
     ) -> Result<HashMap<String, f64>> {
         let trials = common::get_filtered_trials(study, opts.target)?;
-        common::ensure_target_for_multi_objective(&trials, opts.target)?;
         let params = resolve_params(&trials, opts.params)?;
 
         if trials.len() <= 1 {
