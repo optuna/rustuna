@@ -40,4 +40,8 @@ mod split;
 
 pub use hssp::hypervolume_subset_selection;
 pub use nds::fast_non_dominated_sort_partial;
-pub use split::{split_observation_indices_for_multi_objective, split_trials_for_multi_objective};
+pub use split::{
+    split_feasible_observation_indices,
+    split_observation_indices_for_multi_objective,
+    split_trials_for_multi_objective,
+};
