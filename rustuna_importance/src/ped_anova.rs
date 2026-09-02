@@ -237,6 +237,11 @@ impl ImportanceEvaluator for PedAnovaImportanceEvaluator {
         let quantile = target_trials.len() as f64 / region_trials.len() as f64;
 
         let target_trial_ids = target_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+        let region_trial_ids = region_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+        // Since HSSP is approximately implemented using a greedy algorithm, target trials
+        // are guaranteed to be included in region trials, even when target is None for
+        // multi-objective studies.
+        assert!(target_trial_ids.is_subset(&region_trial_ids));
 
         // Theorem 4.2 and Algorithm 1 in the original paper:
         // https://arxiv.org/abs/2601.20800
