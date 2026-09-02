@@ -6,7 +6,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rustuna_core::distribution::Distribution;
 use rustuna_core::internal::parzen_estimator::ParzenEstimator;
-use rustuna_core::multi_objective;
+use rustuna_core::internal::multi_objective;
 use rustuna_core::sampler::{Context, RandomSampler, Sampler};
 use rustuna_core::storage::Storage;
 use rustuna_core::study::Direction;
