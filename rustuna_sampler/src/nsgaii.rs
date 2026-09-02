@@ -197,7 +197,7 @@ impl NSGAIISampler {
     /// Returns `None` when the cache is stale or incompatible with the current sampler,
     /// allowing the caller to fall back to full recomputation.
     fn decode_parent_population_numbers(
-        mut get_trial_number: impl FnMut(u32) -> Result<u32>,
+        mut get_trial_number: impl FnMut(u32) -> Result<Option<u32>>,
         encoded: &str,
         population_size: usize,
     ) -> Result<Option<Vec<u32>>> {
@@ -219,7 +219,10 @@ impl NSGAIISampler {
 
         let mut population_numbers = Vec::with_capacity(trial_ids.len());
         for trial_id in trial_ids {
-            population_numbers.push(get_trial_number(trial_id)?);
+            let Some(trial_number) = get_trial_number(trial_id)? else {
+                return Ok(None);
+            };
+            population_numbers.push(trial_number);
         }
         Ok(Some(population_numbers))
     }
@@ -432,13 +435,36 @@ impl Sampler for NSGAIISampler {
             let cached_parent = if child_generation == 0 {
                 None
             } else {
+                // get_child_generation calls get_trials above, which synchronizes this study's
+                // trials into the storage cache. Resolve only the persisted parent IDs from that
+                // cache instead of rebuilding an ID-to-number map from every completed trial.
                 let mut cached_parent = None;
                 for generation in (1..=child_generation).rev() {
                     let Some(encoded) = study_attrs.get(&Self::parent_cache_key(generation)) else {
                         continue;
                     };
                     let numbers = Self::decode_parent_population_numbers(
-                        |trial_id| guard.get_trial_number_from_id(trial_id),
+                        |trial_id| match guard.get_cached_trial(trial_id) {
+                            Ok(trial)
+                                if trial.study_id == ctx.study_id
+                                    && matches!(
+                                        trial.state_values,
+                                        TrialStateValues::Complete(_)
+                                    ) =>
+                            {
+                                Ok(Some(trial.number))
+                            }
+                            Ok(_) => Ok(None),
+                            Err(error)
+                                if matches!(
+                                    &error.kind,
+                                    ErrorKind::TrialNotFound | ErrorKind::TrialDiscarded
+                                ) =>
+                            {
+                                Ok(None)
+                            }
+                            Err(error) => Err(error),
+                        },
                         encoded,
                         self.population_size,
                     )?;
@@ -1103,12 +1129,7 @@ mod tests {
     fn test_parent_population_cache_preserves_parent_order() {
         let completed_trial_numbers_by_id = HashMap::from([(10, 2), (20, 0), (30, 1)]);
         let population_numbers = NSGAIISampler::decode_parent_population_numbers(
-            |trial_id| {
-                completed_trial_numbers_by_id
-                    .get(&trial_id)
-                    .copied()
-                    .ok_or_else(|| Error::new(ErrorKind::TrialNotFound))
-            },
+            |trial_id| Ok(completed_trial_numbers_by_id.get(&trial_id).copied()),
             "[10,20,30]",
             3,
         )
