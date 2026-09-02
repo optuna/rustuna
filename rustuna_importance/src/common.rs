@@ -114,28 +114,6 @@ fn default_target(t: &PersistedTrial) -> f64 {
     }
 }
 
-pub(crate) fn ensure_target_for_multi_objective(
-    trials: &[PersistedTrial],
-    target: Option<&dyn Fn(&PersistedTrial) -> f64>,
-) -> Result<()> {
-    let Some(first) = trials.first() else {
-        return Ok(());
-    };
-    match &first.state_values {
-        TrialStateValues::Complete(values) => {
-            if target.is_some() || values.len() == 1 {
-                Ok(())
-            } else {
-                Err(Error::with_reason(
-                    ErrorKind::ImportanceEvaluatorError,
-                    "Specify the `target` function for multi-objective studies.",
-                ))
-            }
-        }
-        _ => unreachable!("Only completed trials should be evaluated."),
-    }
-}
-
 pub(crate) fn resolve_target(
     target: Option<&dyn Fn(&PersistedTrial) -> f64>,
 ) -> &dyn Fn(&PersistedTrial) -> f64 {
