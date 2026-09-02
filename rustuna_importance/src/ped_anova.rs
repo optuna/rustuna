@@ -124,6 +124,23 @@ impl PedAnovaImportanceEvaluator {
         if quantile == 1.0 {
             return trials.iter().collect();
         }
+        if study.directions.len() > 1 && target.is_none() {
+            let n_below = (trials.len() as f64 * quantile).ceil() as usize;
+            let values = trials
+                .iter()
+                .map(|t| match &t.state_values {
+                    TrialStateValues::Complete(v) => v.as_slice(),
+                    _ => unreachable!("Only completed trials are passed to this function"),
+                })
+                .collect::<Vec<_>>();
+            let (top_indices, _) = multi_objective::split_feasible_observation_indices(
+                &values,
+                &(0..trials.len()).collect::<Vec<_>>(),
+                &study.directions,
+                n_below,
+            );
+            return top_indices.into_iter().map(|i| &trials[i]).collect();
+        }
         let is_lower_better = target.is_some() || study.directions[0] == Direction::Minimize;
         let objective_values = trials
             .iter()
