@@ -555,7 +555,8 @@ mod tests {
             region_quantile,
             expected_target_size,
             expected_region_size,
-        ) in cases {
+        ) in cases
+        {
             let study = create_study(
                 name,
                 InMemoryStorage::new(),
