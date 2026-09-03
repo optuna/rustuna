@@ -275,6 +275,18 @@ impl Study {
 
     /// Finalizes a trial with the given state and objective values.
     pub fn tell(&self, trial_number: u32, state_values: TrialStateValues) -> Result<()> {
+        if let TrialStateValues::Complete(ref values) = state_values {
+            if values.len() != self.directions.len() {
+                return Err(Error::with_reason(
+                    ErrorKind::InvalidObjectiveValues,
+                    format!(
+                        "The number of the values {} did not match the number of the objectives {}.",
+                        values.len(),
+                        self.directions.len()
+                    ),
+                ));
+            }
+        }
         let mut storage_guard = self.storage.write().map_err(|e| {
             Error::with_reason(
                 ErrorKind::Unexpected,
@@ -324,9 +336,6 @@ impl Study {
             let values = objective(trial);
             match values {
                 Ok(values) => {
-                    if self.directions.len() != values.len() {
-                        return Err(Error::new(ErrorKind::InvalidObjectiveValues));
-                    }
                     self.tell(trial_number, TrialStateValues::Complete(values))?;
                 }
                 Err(e) => {
@@ -500,6 +509,13 @@ impl PersistedStudy {
 
 /// Returns the best completed trial number for a single-objective study.
 pub fn get_best_trial(study: &Study) -> Result<u32> {
+    if study.directions.len() != 1 {
+        return Err(Error::with_reason(
+            ErrorKind::UnsupportedMultiObjective,
+            "The best trial is not defined for a multi-objective study; use best_trials instead."
+                .to_string(),
+        ));
+    }
     let mut guard = study.storage.write().map_err(|e| {
         Error::with_reason(
             ErrorKind::StorageError,
@@ -511,28 +527,13 @@ pub fn get_best_trial(study: &Study) -> Result<u32> {
     let best_trial = trials
         .iter()
         .flatten()
-        .filter(|trial| matches!(trial.state_values, TrialStateValues::Complete(_)))
-        .min_by(|a, b| {
-            let a_value = match a.state_values {
-                TrialStateValues::Complete(ref v) => {
-                    assert!(v.len() == 1);
-                    v[0]
-                }
-                _ => unreachable!("Unexpected state"),
-            };
-            let b_value = match b.state_values {
-                TrialStateValues::Complete(ref v) => {
-                    assert!(v.len() == 1);
-                    v[0]
-                }
-                _ => unreachable!("Unexpected state"),
-            };
-            a_value
-                .partial_cmp(&b_value)
-                .unwrap_or(std::cmp::Ordering::Equal)
+        .filter_map(|trial| match trial.state_values {
+            TrialStateValues::Complete(ref v) => v.first().map(|&value| (trial.number, value)),
+            _ => None,
         })
+        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
         .ok_or(Error::new(ErrorKind::NoCompletedTrial))?;
-    Ok(best_trial.number)
+    Ok(best_trial.0)
 }
 
 // TODO(HideakiImamura): Support the faster algorithm for `len(directions) == 2`.
@@ -1058,6 +1059,41 @@ mod tests {
             persisted_trial.state_values,
             TrialStateValues::Complete(vec![2.5])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_tell_rejects_mismatched_values() -> Result<()> {
+        let storage = InMemoryStorage::new();
+        let study = create_study(
+            "dummy",
+            storage,
+            RandomSampler::new(),
+            vec![Direction::Minimize],
+        )?;
+        let trial = study.ask()?;
+        let err = study
+            .tell(trial.number, TrialStateValues::Complete(vec![1.0, 2.0]))
+            .unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidObjectiveValues));
+        // The trial is still running and can be told again with valid values.
+        study.tell(trial.number, TrialStateValues::Complete(vec![1.0]))?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_best_trial_multi_objective_returns_error() -> Result<()> {
+        let storage = InMemoryStorage::new();
+        let study = create_study(
+            "dummy",
+            storage,
+            RandomSampler::new(),
+            vec![Direction::Minimize, Direction::Minimize],
+        )?;
+        let trial = study.ask()?;
+        study.tell(trial.number, TrialStateValues::Complete(vec![1.0, 2.0]))?;
+        let err = get_best_trial(&study).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::UnsupportedMultiObjective));
         Ok(())
     }
 }

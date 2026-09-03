@@ -638,7 +638,11 @@ class Study:
 
         Args:
             number: Trial number returned by the trial.
-            values: Objective value(s). If None, the trial is marked as failed.
+            values: Objective value(s). If the values are infeasible (NaN, or the
+                number of values does not match the number of objectives in the
+                study) and *state* is None, the trial is marked as failed and a
+                UserWarning is emitted; if *state* is TrialState.COMPLETE, a
+                ValueError is raised instead.
             state: State to set on the trial. If None, COMPLETE is used when values is not None.
 
         Returns:
