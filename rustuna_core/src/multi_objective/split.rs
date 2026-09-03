@@ -106,7 +106,7 @@ pub fn split_observation_indices_for_multi_objective<T: AsRef<[f64]>>(
     (good_indices, poor_indices)
 }
 
-fn split_feasible_observation_indices<T: AsRef<[f64]>>(
+pub fn split_feasible_observation_indices<T: AsRef<[f64]>>(
     values: &[T],
     feasible_indices: &[usize],
     directions: &[Direction],

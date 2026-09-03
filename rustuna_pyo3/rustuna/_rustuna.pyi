@@ -442,6 +442,12 @@ class PedAnovaImportanceEvaluator:
     $\\gamma'$ and $\\gamma$ in the original paper, respectively.
 
     Note:
+        For a multi-objective study with no `target`, top-quantile trials are ranked by
+        non-domination rank, with hypervolume subset selection used to break ties.
+        The resulting importance can be interpreted as how important each hyperparameter
+        is to reach the Pareto front without preference for any particular objective.
+        Pass a `target` to evaluate importance for one objective instead.
+
         The performance of PED-ANOVA depends on how many trials to consider above
         `target_quantile`. To stabilize the analysis, it is preferable to include at least
         5 trials above `target_quantile`.
@@ -523,8 +529,9 @@ class PedAnovaImportanceEvaluator:
             target:
                 A function that returns the value used to evaluate importances. If `None`,
                 objective values are used for single-objective optimization. For multi-objective
-                optimization, this argument must be specified to return a single float value for
-                each trial. `PedAnovaImportanceEvaluator` assumes lower `target` values are better.
+                optimization, top trials are selected by non-domination rank and hypervolume
+                subset selection. To evaluate one objective, return it from this function.
+                `PedAnovaImportanceEvaluator` assumes lower `target` values are better.
 
         Returns:
             A `dict` where the keys are parameter names and the values are assessed importances.
@@ -574,8 +581,11 @@ def get_param_importances(
         target:
             A function that returns the value used to evaluate importances.
             If `None`, objective values are used for single-objective optimization.
-            For multi-objective optimization, this argument must be specified to return
-            a single float value for each trial.
+            For multi-objective optimization, top trials are selected by non-domination rank
+            and hypervolume subset selection. The resulting importance can be
+            interpreted as how important each hyperparameter is to reach the Pareto
+            front without preference for any particular objective.
+            To evaluate one objective, return it from this function.
         normalize:
             A boolean option to specify whether the sum of the importance values should be
             normalized to 1.0.

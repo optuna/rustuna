@@ -8,6 +8,7 @@ from optuna.importance import BaseImportanceEvaluator
 from optuna.testing.pytest_importance import (
     BasicImportanceEvaluatorTestCase,
     ConditionalImportanceEvaluatorTestCase,
+    MultiObjectiveImportanceEvaluatorTestCase,
 )
 
 from rustuna.converter import ToOptunaImportanceEvaluator
@@ -21,6 +22,12 @@ class TestBasicImportanceEvaluator(BasicImportanceEvaluatorTestCase):
 
 
 class TestConditionalImportanceEvaluator(ConditionalImportanceEvaluatorTestCase):
+    @pytest.fixture(params=[PedAnovaImportanceEvaluator])
+    def evaluator(self, request: SubRequest) -> Callable[..., BaseImportanceEvaluator]:
+        return lambda: ToOptunaImportanceEvaluator(request.param())
+
+
+class TestMultiObjectiveImportanceEvaluator(MultiObjectiveImportanceEvaluatorTestCase):
     @pytest.fixture(params=[PedAnovaImportanceEvaluator])
     def evaluator(self, request: SubRequest) -> Callable[..., BaseImportanceEvaluator]:
         return lambda: ToOptunaImportanceEvaluator(request.param())

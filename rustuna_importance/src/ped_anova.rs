@@ -1,8 +1,9 @@
 use crate::common::{self, ImportanceEvaluator, ImportanceOptions};
 use rustuna_core::distribution::Distribution;
+use rustuna_core::internal::multi_objective;
 use rustuna_core::internal::parzen_estimator::ParzenEstimator;
 use rustuna_core::study::{Direction, Study};
-use rustuna_core::trial::PersistedTrial;
+use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::Result;
 use rustuna_core::{Error, ErrorKind};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -25,6 +26,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// `evaluate_on_local` controls whether importances are measured against the empirical search
 /// region explored during optimization or against the full search space. Local evaluation is
 /// especially useful when the effective search region changes during the study.
+///
+/// For a multi-objective study without an explicit target, trials are ranked by non-domination
+/// rank, and ties within a rank are resolved by hypervolume subset selection (HSSP). To compute
+/// the importance for a single objective instead, specify it with [`ImportanceOptions::with_target`].
+/// [`PedAnovaImportanceEvaluator`] assumes minimization, so negate the target value when the
+/// selected objective is being maximized.
 ///
 /// # Examples
 ///
@@ -124,6 +131,23 @@ impl PedAnovaImportanceEvaluator {
         if quantile == 1.0 {
             return trials.iter().collect();
         }
+        if study.directions.len() > 1 && target.is_none() {
+            let n_below = (trials.len() as f64 * quantile).ceil() as usize;
+            let values = trials
+                .iter()
+                .map(|t| match &t.state_values {
+                    TrialStateValues::Complete(v) => v.as_slice(),
+                    _ => unreachable!("Only completed trials are passed to this function"),
+                })
+                .collect::<Vec<_>>();
+            let (top_indices, _) = multi_objective::split_feasible_observation_indices(
+                &values,
+                &(0..trials.len()).collect::<Vec<_>>(),
+                &study.directions,
+                n_below,
+            );
+            return top_indices.into_iter().map(|i| &trials[i]).collect();
+        }
         let is_lower_better = target.is_some() || study.directions[0] == Direction::Minimize;
         let objective_values = trials
             .iter()
@@ -197,7 +221,6 @@ impl ImportanceEvaluator for PedAnovaImportanceEvaluator {
         opts: ImportanceOptions,
     ) -> Result<HashMap<String, f64>> {
         let trials = common::get_filtered_trials(study, opts.target)?;
-        common::ensure_target_for_multi_objective(&trials, opts.target)?;
         let params = resolve_params(&trials, opts.params)?;
 
         if trials.len() <= 1 {
@@ -214,6 +237,11 @@ impl ImportanceEvaluator for PedAnovaImportanceEvaluator {
         let quantile = target_trials.len() as f64 / region_trials.len() as f64;
 
         let target_trial_ids = target_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+        let region_trial_ids = region_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+        // Since HSSP is approximately implemented using a greedy algorithm, target trials
+        // are guaranteed to be included in region trials, even when target is None for
+        // multi-objective studies.
+        assert!(target_trial_ids.is_subset(&region_trial_ids));
 
         // Theorem 4.2 and Algorithm 1 in the original paper:
         // https://arxiv.org/abs/2601.20800
@@ -423,7 +451,9 @@ mod tests {
     use super::*;
     use crate::test_utils;
     use crate::test_utils::ObjectiveType;
-    use rustuna_core::study::Direction;
+    use rustuna_core::sampler::RandomSampler;
+    use rustuna_core::storage::InMemoryStorage;
+    use rustuna_core::study::{create_study, Direction};
     use rustuna_core::Result;
 
     #[test]
@@ -473,6 +503,88 @@ mod tests {
         let importances_default = evaluator_default.evaluate(&study)?;
         let importances = evaluator.evaluate(&study)?;
         assert_ne!(importances_default, importances);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_top_quantile_trials_multi_objective_without_target() -> Result<()> {
+        let cases = [
+            (
+                "different-nondomination-ranks",
+                vec![Direction::Minimize, Direction::Minimize],
+                (0..6).map(|i| vec![i as f64, i as f64]).collect(),
+                0.5,
+                0.8,
+                3,
+                5,
+            ),
+            (
+                "same-rank-hssp-tie-break-after-best-rank",
+                vec![Direction::Minimize, Direction::Minimize],
+                vec![
+                    vec![0.0, 0.0],
+                    vec![1.0, 5.0],
+                    vec![2.0, 4.0],
+                    vec![3.0, 3.0],
+                    vec![4.0, 2.0],
+                    vec![5.0, 1.0],
+                    vec![6.0, 6.0],
+                    vec![7.0, 7.0],
+                ],
+                0.5,
+                0.75,
+                4,
+                6,
+            ),
+            (
+                "same-rank-hssp-tie-break-on-front",
+                vec![Direction::Minimize, Direction::Minimize],
+                (0..6).map(|i| vec![i as f64, (5 - i) as f64]).collect(),
+                0.5,
+                0.8,
+                3,
+                5,
+            ),
+        ];
+
+        for (
+            name,
+            directions,
+            values,
+            target_quantile,
+            region_quantile,
+            expected_target_size,
+            expected_region_size,
+        ) in cases
+        {
+            let study = create_study(
+                name,
+                InMemoryStorage::new(),
+                RandomSampler::new(),
+                directions,
+            )?;
+            for (number, objective_values) in values.into_iter().enumerate() {
+                let mut trial = PersistedTrial::new(number as u32, study.id, number as u32);
+                trial.state_values = TrialStateValues::Complete(objective_values);
+                study.add_trial(trial)?;
+            }
+            let trials = common::get_filtered_trials(&study, None)?;
+            let evaluator =
+                PedAnovaImportanceEvaluator::new(target_quantile, region_quantile, true)?;
+
+            let target_trials =
+                evaluator.get_top_quantile_trials(&study, &trials, target_quantile, None);
+            let region_trials =
+                evaluator.get_top_quantile_trials(&study, &trials, region_quantile, None);
+            let target_ids = target_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+            let region_ids = region_trials.iter().map(|t| t.id).collect::<HashSet<_>>();
+
+            assert_eq!(target_trials.len(), expected_target_size, "{name}");
+            assert_eq!(region_trials.len(), expected_region_size, "{name}");
+            // Since HSSP is approximately implemented using a greedy algorithm, target trials
+            // are guaranteed to be included in region trials.
+            assert!(target_ids.is_subset(&region_ids), "{name}");
+        }
         Ok(())
     }
 

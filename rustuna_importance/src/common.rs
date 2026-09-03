@@ -28,8 +28,8 @@ impl<'a> ImportanceOptions<'a> {
 
     /// Sets the target value used to evaluate importances.
     ///
-    /// By default, evaluators use the first objective value of each completed trial. For
-    /// multi-objective studies, this target must be specified explicitly.
+    /// By default, the PED-ANOVA evaluator uses the objective value for single-objective studies
+    /// and Pareto-based ranking for multi-objective studies.
     pub fn with_target(mut self, target: &'a dyn Fn(&PersistedTrial) -> f64) -> Self {
         self.target = Some(target);
         self
@@ -114,28 +114,6 @@ fn default_target(t: &PersistedTrial) -> f64 {
     }
 }
 
-pub(crate) fn ensure_target_for_multi_objective(
-    trials: &[PersistedTrial],
-    target: Option<&dyn Fn(&PersistedTrial) -> f64>,
-) -> Result<()> {
-    let Some(first) = trials.first() else {
-        return Ok(());
-    };
-    match &first.state_values {
-        TrialStateValues::Complete(values) => {
-            if target.is_some() || values.len() == 1 {
-                Ok(())
-            } else {
-                Err(Error::with_reason(
-                    ErrorKind::ImportanceEvaluatorError,
-                    "Specify the `target` function for multi-objective studies.",
-                ))
-            }
-        }
-        _ => unreachable!("Only completed trials should be evaluated."),
-    }
-}
-
 pub(crate) fn resolve_target(
     target: Option<&dyn Fn(&PersistedTrial) -> f64>,
 ) -> &dyn Fn(&PersistedTrial) -> f64 {
@@ -157,8 +135,11 @@ pub(crate) fn get_filtered_trials(
         .get_trials(study.id)?
         .iter()
         .flatten()
-        .filter(|t| matches!(t.state_values, TrialStateValues::Complete(_)))
-        .filter(|t| resolve_target(target)(t).is_finite())
+        .filter(|t| match (&t.state_values, target) {
+            (TrialStateValues::Complete(_), Some(target)) => target(t).is_finite(),
+            (TrialStateValues::Complete(values), None) => values.iter().all(|v| v.is_finite()),
+            _ => false,
+        })
         .cloned()
         .collect::<Vec<_>>();
     Ok(completed_trials)
@@ -175,27 +156,28 @@ mod tests {
     use rustuna_core::storage::InMemoryStorage;
     use rustuna_core::study::{self, Direction};
     use rustuna_core::trial::PersistedTrial;
-    use rustuna_core::{ErrorKind, Result};
+    use rustuna_core::Result;
     use std::collections::HashSet;
 
     #[test]
-    fn test_error_multi_objective_wo_target() -> Result<()> {
+    fn test_get_param_importances_multi_objective_without_target() -> Result<()> {
         let evaluators = vec![PedAnovaImportanceEvaluator::default()];
-        let study = test_utils::get_study(42, 5, ObjectiveType::Multi, Direction::Minimize)?;
+        let study = test_utils::get_study(42, 20, ObjectiveType::Multi, Direction::Minimize)?;
         for evaluator in evaluators {
-            let err = get_param_importances(&study, &evaluator).unwrap_err();
-            assert!(matches!(err.kind, ErrorKind::ImportanceEvaluatorError));
+            let importances = get_param_importances(&study, &evaluator)?;
+            assert_eq!(importances.len(), 6, "{importances:?}");
+            assert!((importances.values().sum::<f64>() - 1.0).abs() < 1e-12);
         }
         Ok(())
     }
 
     #[test]
-    fn test_evaluator_error_multi_objective_wo_target() -> Result<()> {
+    fn test_evaluator_multi_objective_without_target() -> Result<()> {
         let evaluators = vec![PedAnovaImportanceEvaluator::default()];
-        let study = test_utils::get_study(42, 5, ObjectiveType::Multi, Direction::Minimize)?;
+        let study = test_utils::get_study(42, 20, ObjectiveType::Multi, Direction::Minimize)?;
         for evaluator in evaluators {
-            let err = evaluator.evaluate(&study).unwrap_err();
-            assert!(matches!(err.kind, ErrorKind::ImportanceEvaluatorError));
+            let importances = evaluator.evaluate(&study)?;
+            assert_eq!(importances.len(), 6, "{importances:?}");
         }
         Ok(())
     }
