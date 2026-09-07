@@ -6,9 +6,11 @@ import pytest
 import rustuna
 
 
-def test_cmaes_sampler() -> None:
+@pytest.mark.parametrize("apply_discard", [True, False])
+def test_cmaes_sampler(apply_discard: bool) -> None:
+    storage = rustuna.storages.InMemoryStorage(apply_discard=apply_discard)
     sampler = rustuna.samplers.CmaEsSampler(seed=1, popsize=4)
-    study = rustuna.create_study(sampler=sampler)
+    study = rustuna.create_study(sampler=sampler, storage=storage)
 
     def objective(trial: rustuna.Trial) -> float:
         x = trial.suggest_float("x", -10, 10)

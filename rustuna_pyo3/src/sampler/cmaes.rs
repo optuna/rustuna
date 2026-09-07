@@ -171,12 +171,7 @@ impl CmaEsSamplerState {
                 .transform
                 .as_ref()
                 .ok_or_else(|| Error::new(ErrorKind::Unexpected))?;
-            let guard = storage.read().map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::Unexpected,
-                    format!("Failed to acquire storage guard: {e}"),
-                )
-            })?;
+            let guard = storage.read().unwrap();
             let mut solutions = Vec::with_capacity(population_size);
             for trial_id in self.solution_trial_ids.iter() {
                 if solutions.len() == population_size {
@@ -202,11 +197,8 @@ impl CmaEsSamplerState {
         };
         if solutions.len() >= population_size {
             self.tell(solutions)?;
-            // TODO(c-bata): Consider calling discard_trials here.
-            // let mut guard = storage
-            //     .write()
-            //     .map_err(|_| Error::new(ErrorKind::Unexpected))?;
-            // guard.discard_trials(&self.solution_trial_ids)?;
+            let mut guard = storage.write().unwrap();
+            guard.discard_trials(&self.solution_trial_ids)?;
             self.solution_trial_ids.clear();
         }
 
@@ -254,15 +246,7 @@ impl Sampler for CmaEsSampler {
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
-        self.state
-            .lock()
-            .map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::SamplerError,
-                    format!("Failed to acquire sampler state guard: {e}"),
-                )
-            })?
-            .sample(ctx, storage, search_space)
+        self.state.lock().unwrap().sample(ctx, storage, search_space)
     }
 }
 
