@@ -246,7 +246,10 @@ impl Sampler for CmaEsSampler {
         storage: Arc<RwLock<dyn Storage>>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
-        self.state.lock().unwrap().sample(ctx, storage, search_space)
+        self.state
+            .lock()
+            .unwrap()
+            .sample(ctx, storage, search_space)
     }
 }
 
