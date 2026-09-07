@@ -3,6 +3,7 @@ on:
   pull_request:
     branches:
       - main
+      - release-python-v0.1.0
 
 permissions:
   contents: read

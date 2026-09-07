@@ -202,11 +202,10 @@ impl CmaEsSamplerState {
         };
         if solutions.len() >= population_size {
             self.tell(solutions)?;
-            // TODO(c-bata): Consider calling discard_trials here.
-            // let mut guard = storage
-            //     .write()
-            //     .map_err(|_| Error::new(ErrorKind::Unexpected))?;
-            // guard.discard_trials(&self.solution_trial_ids)?;
+            let mut guard = storage
+                .write()
+                .map_err(|_| Error::new(ErrorKind::Unexpected))?;
+            guard.discard_trials(&self.solution_trial_ids)?;
             self.solution_trial_ids.clear();
         }
 
