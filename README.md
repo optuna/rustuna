@@ -75,7 +75,7 @@ You can install Rustuna via pip. Unlike Optuna, Rustuna doesn't have runtime dep
 $ pip install rustuna
 ```
 
-Ready to try Rustuna in practice? The best place to start is the [Getting Started](docs/docs/tutorial/getting-started.md) guide, which walks through the basic functionality and core APIs.
+Ready to try Rustuna in practice? The best place to start is the [Getting Started](https://rustuna.readthedocs.io/en/latest/tutorial/getting-started/) guide, which walks through the basic functionality and core APIs.
 
 ## Citation
 
