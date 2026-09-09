@@ -139,7 +139,7 @@ impl NSGAIISampler {
             )
         })
     }
-    fn sync_generation_cache(
+    fn sync_generation_frontier(
         &self,
         study_id: u32,
         trials: &[Option<PersistedTrial>],
@@ -156,12 +156,19 @@ impl NSGAIISampler {
             sync_state.unseen_trial_start = 0;
         }
 
-        let mut next_unfinished_trial_numbers = Vec::with_capacity(
-            sync_state.unfinished_trial_numbers.len()
-                + trials.len().saturating_sub(sync_state.unseen_trial_start),
-        );
-        for trial_number in std::mem::take(&mut sync_state.unfinished_trial_numbers) {
-            let Some(trial) = trials.get(trial_number as usize).and_then(Option::as_ref) else {
+        let unseen_trial_start = sync_state.unseen_trial_start;
+        let mut unfinished_trial_numbers = std::mem::take(&mut sync_state.unfinished_trial_numbers);
+        let unfinished_count = unfinished_trial_numbers.len();
+        let changed_trial_count =
+            unfinished_count + trials.len().saturating_sub(unseen_trial_start);
+        let mut next_unfinished_count = 0;
+        for position in 0..changed_trial_count {
+            let trial_index = if position < unfinished_count {
+                unfinished_trial_numbers[position] as usize
+            } else {
+                unseen_trial_start + position - unfinished_count
+            };
+            let Some(trial) = trials.get(trial_index).and_then(Option::as_ref) else {
                 continue;
             };
             match &trial.state_values {
@@ -185,40 +192,17 @@ impl NSGAIISampler {
                 }
                 TrialStateValues::Pruned | TrialStateValues::Fail => {}
                 TrialStateValues::Running | TrialStateValues::Waiting => {
-                    next_unfinished_trial_numbers.push(trial.number);
+                    if next_unfinished_count < unfinished_trial_numbers.len() {
+                        unfinished_trial_numbers[next_unfinished_count] = trial.number;
+                    } else {
+                        unfinished_trial_numbers.push(trial.number);
+                    }
+                    next_unfinished_count += 1;
                 }
             }
         }
-
-        for trial in trials.iter().skip(sync_state.unseen_trial_start).flatten() {
-            match &trial.state_values {
-                TrialStateValues::Complete(_) => {
-                    if let Some(generation) = trial
-                        .attrs
-                        .get(&AttrKey::System("generation".into()))
-                        .and_then(|generation| generation.parse::<u32>().ok())
-                    {
-                        if generation >= sync_state.generation_offset {
-                            let index = (generation - sync_state.generation_offset) as usize;
-                            sync_state
-                                .generation_numbers
-                                .resize_with(index + 1, Vec::new);
-                            let numbers = &mut sync_state.generation_numbers[index];
-                            if !numbers.contains(&trial.number) {
-                                numbers.push(trial.number);
-                            }
-                        }
-                    }
-                }
-                TrialStateValues::Pruned | TrialStateValues::Fail => {}
-                TrialStateValues::Running | TrialStateValues::Waiting => {
-                    if !next_unfinished_trial_numbers.contains(&trial.number) {
-                        next_unfinished_trial_numbers.push(trial.number);
-                    }
-                }
-            }
-        }
-        sync_state.unfinished_trial_numbers = next_unfinished_trial_numbers;
+        unfinished_trial_numbers.truncate(next_unfinished_count);
+        sync_state.unfinished_trial_numbers = unfinished_trial_numbers;
         sync_state.unseen_trial_start = trials.len();
         let full_generations = sync_state
             .generation_numbers
@@ -322,7 +306,7 @@ impl NSGAIISampler {
         study_id: u32,
         trials: &[Option<PersistedTrial>],
     ) -> Result<u32> {
-        self.sync_generation_cache(study_id, trials)
+        self.sync_generation_frontier(study_id, trials)
     }
 
     fn get_parent_population_numbers(
