@@ -2,9 +2,9 @@ name: Build and publish Python distributions
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "python-v*"
+  release:
+    types:
+      - published
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -34,6 +34,11 @@ env:
 jobs:
   check_version:
     name: Check version
+    if: >-
+      ${{
+        github.event_name != 'release' ||
+        startsWith(github.event.release.tag_name, 'python-v')
+      }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,17 +52,20 @@ jobs:
           activate-environment: true
           enable-cache: false
       - name: Compare the tag with the Python package version
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        if: ${{ github.event_name == 'release' }}
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
           version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("rustuna_pyo3/pyproject.toml").read_text())["project"]["version"])')"
-          if [ "python-v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} does not match the Python package version ${version}" >&2
+          if [ "python-v${version}" != "$RELEASE_TAG" ]; then
+            echo "tag ${RELEASE_TAG} does not match the Python package version ${version}" >&2
             exit 1
           fi
 
   build_manylinux:
     name: ${{ matrix.platform }} ${{ matrix.variant }}
+    needs: check_version
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -136,6 +144,7 @@ jobs:
     # manual build, so an abi3t musllinux wheel would serve almost nobody and could not be tested
     # on Alpine either.
     name: ${{ matrix.platform }} abi3
+    needs: check_version
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -190,6 +199,7 @@ jobs:
 
   build_native:
     name: ${{ matrix.platform }} ${{ matrix.variant }}
+    needs: check_version
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -313,6 +323,7 @@ jobs:
 
   build_sdist:
     name: Source distribution
+    needs: check_version
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -408,13 +419,13 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    # Only a `python-v*` tag can publish; `workflow_dispatch` runs stop after `verify`.
+    # Only a published `python-v*` GitHub Release can publish; manual runs stop after `verify`.
     if: >-
       ${{
         github.repository == 'optuna/rustuna' &&
-        github.event_name == 'push' &&
-        github.ref_type == 'tag' &&
-        startsWith(github.ref, 'refs/tags/python-v')
+        github.event_name == 'release' &&
+        github.event.action == 'published' &&
+        startsWith(github.event.release.tag_name, 'python-v')
       }}
     needs:
       - check_version
