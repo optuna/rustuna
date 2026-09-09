@@ -301,14 +301,6 @@ impl NSGAIISampler {
         }
         Ok(elite_population_numbers)
     }
-    fn get_child_generation(
-        &self,
-        study_id: u32,
-        trials: &[Option<PersistedTrial>],
-    ) -> Result<u32> {
-        self.sync_generation_frontier(study_id, trials)
-    }
-
     fn get_parent_population_numbers(
         &self,
         ctx: &Context,
@@ -486,7 +478,7 @@ impl Sampler for NSGAIISampler {
         let (child_generation, parent_population_numbers, parent_cache_attrs) = {
             let child_generation = {
                 let trials = guard.get_trials(ctx.study_id)?;
-                self.get_child_generation(ctx.study_id, trials)?
+                self.sync_generation_frontier(ctx.study_id, trials)?
             };
 
             let study_attrs = guard.get_study(ctx.study_id)?.attrs.clone();
@@ -494,7 +486,7 @@ impl Sampler for NSGAIISampler {
             let cached_parent = if child_generation == 0 {
                 None
             } else {
-                // get_child_generation calls get_trials above, which synchronizes this study's
+                // sync_generation_frontier follows get_trials above, which synchronizes this study's
                 // trials into the storage cache. Resolve only the persisted parent IDs from that
                 // cache instead of rebuilding an ID-to-number map from every completed trial.
                 let mut cached_parent = None;
@@ -861,20 +853,6 @@ mod tests {
     use rustuna_core::storage::InMemoryStorage;
     use rustuna_core::study::{create_study, Direction};
 
-    fn persisted_trial(
-        number: u32,
-        state_values: TrialStateValues,
-        generation: Option<u32>,
-    ) -> PersistedTrial {
-        let mut trial = PersistedTrial::new(number, 0, number);
-        trial.state_values = state_values;
-        if let Some(generation) = generation {
-            trial
-                .attrs
-                .insert(AttrKey::System("generation".into()), generation.to_string());
-        }
-        trial
-    }
     #[test]
     fn test_optimize() {
         let storage = InMemoryStorage::new();
@@ -1072,190 +1050,6 @@ mod tests {
                 ta.number
             );
         }
-    }
-
-    #[test]
-    fn test_get_child_generation_indexes_newly_appended_completed_trials() {
-        let sampler = NSGAIISampler::new(2, None, 1.0, 1.0);
-        let mut trials = vec![Some(persisted_trial(
-            0,
-            TrialStateValues::Complete(vec![0.0, 0.0]),
-            Some(0),
-        ))];
-
-        assert_eq!(sampler.get_child_generation(0, &trials).unwrap(), 0);
-
-        trials.push(Some(persisted_trial(
-            1,
-            TrialStateValues::Complete(vec![1.0, 1.0]),
-            Some(0),
-        )));
-
-        assert_eq!(sampler.get_child_generation(0, &trials).unwrap(), 1);
-        let sync_state = sampler.get_generation_sync_state_lock().unwrap();
-        assert_eq!(sync_state.generation_offset, 0);
-        assert_eq!(sync_state.generation_numbers, VecDeque::from([vec![0, 1]]));
-    }
-
-    #[test]
-    fn test_get_child_generation_rechecks_unfinished_trials() {
-        let sampler = NSGAIISampler::new(1, None, 1.0, 1.0);
-        let mut trials = vec![Some(persisted_trial(0, TrialStateValues::Running, Some(0)))];
-
-        assert_eq!(sampler.get_child_generation(0, &trials).unwrap(), 0);
-        assert_eq!(
-            sampler
-                .get_generation_sync_state_lock()
-                .unwrap()
-                .unfinished_trial_numbers
-                .as_slice(),
-            &[0]
-        );
-
-        trials[0] = Some(persisted_trial(
-            0,
-            TrialStateValues::Complete(vec![0.0, 0.0]),
-            Some(0),
-        ));
-
-        assert_eq!(sampler.get_child_generation(0, &trials).unwrap(), 1);
-        assert!(sampler
-            .get_generation_sync_state_lock()
-            .unwrap()
-            .unfinished_trial_numbers
-            .is_empty());
-        let sync_state = sampler.get_generation_sync_state_lock().unwrap();
-        assert_eq!(sync_state.generation_offset, 0);
-        assert_eq!(sync_state.generation_numbers, VecDeque::from([vec![0]]));
-    }
-
-    #[test]
-    fn test_late_completion_from_discarded_generation_does_not_move_frontier() {
-        let study = create_study(
-            "generation-frontier-late-completion",
-            InMemoryStorage::new(),
-            NSGAIISampler::new(2, None, 1.0, 1.0),
-            vec![Direction::Minimize, Direction::Minimize],
-        )
-        .unwrap();
-        let make_worker = || {
-            rustuna_core::study::Study::from_id(
-                study.id,
-                Arc::clone(&study.storage),
-                Arc::new(NSGAIISampler::new(2, None, 1.0, 1.0)),
-            )
-            .unwrap()
-        };
-        let worker = make_worker();
-        let late_worker = make_worker();
-
-        let trial0 = study.ask().unwrap();
-        let trial1 = worker.ask().unwrap();
-        let late_trial = late_worker.ask().unwrap();
-        study
-            .tell(trial0.number, TrialStateValues::Complete(vec![0.0, 1.0]))
-            .unwrap();
-        worker
-            .tell(trial1.number, TrialStateValues::Complete(vec![1.0, 0.0]))
-            .unwrap();
-        let first_child = study.ask().unwrap();
-
-        late_worker
-            .tell(
-                late_trial.number,
-                TrialStateValues::Complete(vec![0.5, 0.5]),
-            )
-            .unwrap();
-        let second_child = study.ask().unwrap();
-
-        let mut storage = study.storage.write().unwrap();
-        for child in [first_child, second_child] {
-            assert_eq!(
-                storage
-                    .get_trial(child.id)
-                    .unwrap()
-                    .attrs
-                    .get(&AttrKey::System("generation".into())),
-                Some(&"1".to_string())
-            );
-        }
-    }
-
-    #[test]
-    fn test_get_child_generation_resets_cache_when_trial_list_shrinks() {
-        let sampler = NSGAIISampler::new(2, None, 1.0, 1.0);
-        let full_trials = vec![
-            Some(persisted_trial(
-                0,
-                TrialStateValues::Complete(vec![0.0, 0.0]),
-                Some(0),
-            )),
-            Some(persisted_trial(
-                1,
-                TrialStateValues::Complete(vec![1.0, 1.0]),
-                Some(0),
-            )),
-        ];
-
-        assert_eq!(sampler.get_child_generation(0, &full_trials).unwrap(), 1);
-
-        let shortened_trials = vec![Some(persisted_trial(
-            0,
-            TrialStateValues::Complete(vec![0.0, 0.0]),
-            Some(0),
-        ))];
-
-        assert_eq!(
-            sampler.get_child_generation(0, &shortened_trials).unwrap(),
-            0
-        );
-        assert_eq!(
-            sampler
-                .get_generation_sync_state_lock()
-                .unwrap()
-                .unseen_trial_start,
-            1
-        );
-        let sync_state = sampler.get_generation_sync_state_lock().unwrap();
-        assert_eq!(sync_state.generation_offset, 0);
-        assert_eq!(sync_state.generation_numbers, VecDeque::from([vec![0]]));
-    }
-
-    #[test]
-    fn test_generation_cache_picks_up_external_completion_before_assigning_child_generation() {
-        let study = create_study(
-            "generation-cache-stale-workers",
-            InMemoryStorage::new(),
-            NSGAIISampler::new(2, None, 1.0, 1.0),
-            vec![Direction::Minimize, Direction::Minimize],
-        )
-        .unwrap();
-        let worker = rustuna_core::study::Study::from_id(
-            study.id,
-            Arc::clone(&study.storage),
-            Arc::new(NSGAIISampler::new(2, None, 1.0, 1.0)),
-        )
-        .unwrap();
-
-        let trial0 = study.ask().unwrap();
-        let trial1 = worker.ask().unwrap();
-        study
-            .tell(trial0.number, TrialStateValues::Complete(vec![0.0, 1.0]))
-            .unwrap();
-        worker
-            .tell(trial1.number, TrialStateValues::Complete(vec![1.0, 0.0]))
-            .unwrap();
-
-        let next_trial = study.ask().unwrap();
-        let mut storage = study.storage.write().unwrap();
-        assert_eq!(
-            storage
-                .get_trial(next_trial.id)
-                .unwrap()
-                .attrs
-                .get(&AttrKey::System("generation".into())),
-            Some(&"1".to_string())
-        );
     }
 
     #[test]
