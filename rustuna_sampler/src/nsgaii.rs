@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ops::DerefMut;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use rand::prelude::*;
 use rand::rngs::StdRng;
@@ -124,28 +124,8 @@ impl NSGAIISampler {
             )
         })
     }
-    fn get_generation_to_numbers_read_lock(
-        &self,
-    ) -> Result<RwLockReadGuard<'_, HashMap<u32, Vec<u32>>>> {
-        self.generation_to_numbers.read().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::SamplerError,
-                format!("Failed to acquire generation_to_numbers read guard: {e}"),
-            )
-        })
-    }
-    fn get_generation_to_numbers_write_lock(
-        &self,
-    ) -> Result<RwLockWriteGuard<'_, HashMap<u32, Vec<u32>>>> {
-        self.generation_to_numbers.write().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::SamplerError,
-                format!("Failed to acquire generation_to_numbers write guard: {e}"),
-            )
-        })
-    }
     fn rebuild_generation_cache(&self, trials: &[Option<PersistedTrial>]) -> Result<()> {
-        let mut generation_to_numbers = self.get_generation_to_numbers_write_lock()?;
+        let mut generation_to_numbers = self.generation_to_numbers.write().unwrap();
         generation_to_numbers.clear();
         let generation_key = AttrKey::System("generation".into());
         for trial in trials.iter().flatten() {
@@ -251,14 +231,16 @@ impl NSGAIISampler {
     }
     fn get_child_generation(&self, trials: &[Option<PersistedTrial>]) -> Result<u32> {
         // TODO: Incrementally sync trials completed by other workers without a full rescan.
-        if self.get_generation_to_numbers_read_lock()?.is_empty() {
+        if self.generation_to_numbers.read().unwrap().is_empty() {
             self.rebuild_generation_cache(trials)?;
         }
 
         let mut child_generation = 0u32;
         loop {
             let full = self
-                .get_generation_to_numbers_read_lock()?
+                .generation_to_numbers
+                .read()
+                .unwrap()
                 .get(&child_generation)
                 .is_some_and(|numbers| numbers.len() >= self.population_size);
             if !full {
@@ -295,11 +277,9 @@ impl NSGAIISampler {
 
         // Recompute elite selection for each missing generation.
         let mut new_attrs = Attrs::new();
+        let guard = self.generation_to_numbers.read().unwrap();
         for generation in first_missing_generation..=child_generation {
-            let population_numbers = match self
-                .get_generation_to_numbers_read_lock()?
-                .get(&(generation - 1))
-            {
+            let population_numbers = match guard.get(&(generation - 1)) {
                 Some(numbers) if numbers.len() >= self.population_size => numbers.clone(),
                 _ => break,
             };
@@ -565,7 +545,7 @@ impl Sampler for NSGAIISampler {
             let generation_key = AttrKey::System("generation".into());
             if let Some(gen_str) = trial.attrs.get(&generation_key) {
                 if let Ok(generation) = gen_str.parse::<u32>() {
-                    let mut generation_to_numbers = self.get_generation_to_numbers_write_lock()?;
+                    let mut generation_to_numbers = self.generation_to_numbers.write().unwrap();
                     generation_to_numbers
                         .entry(generation)
                         .or_default()
