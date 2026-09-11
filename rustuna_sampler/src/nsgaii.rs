@@ -69,8 +69,8 @@ pub struct NSGAIISampler {
 #[derive(Default)]
 struct GenerationSyncState {
     cached_study_id: Option<u32>,
-    generation_offset: u32,
-    generation_numbers: VecDeque<Vec<u32>>,
+    cached_child_generation: u32,
+    cached_children: VecDeque<Vec<u32>>,
     unfinished_trial_numbers: Vec<u32>,
     unseen_trial_start: usize,
 }
@@ -139,7 +139,7 @@ impl NSGAIISampler {
             )
         })
     }
-    fn sync_generation_frontier(
+    fn sync_child_generation(
         &self,
         study_id: u32,
         trials: &[Option<PersistedTrial>],
@@ -150,8 +150,8 @@ impl NSGAIISampler {
             || trials.len() < sync_state.unseen_trial_start
         {
             sync_state.cached_study_id = Some(study_id);
-            sync_state.generation_offset = 0;
-            sync_state.generation_numbers.clear();
+            sync_state.cached_child_generation = 0;
+            sync_state.cached_children.clear();
             sync_state.unfinished_trial_numbers.clear();
             sync_state.unseen_trial_start = 0;
         }
@@ -178,12 +178,10 @@ impl NSGAIISampler {
                         .get(&AttrKey::System("generation".into()))
                         .and_then(|generation| generation.parse::<u32>().ok())
                     {
-                        if generation >= sync_state.generation_offset {
-                            let index = (generation - sync_state.generation_offset) as usize;
-                            sync_state
-                                .generation_numbers
-                                .resize_with(index + 1, Vec::new);
-                            let numbers = &mut sync_state.generation_numbers[index];
+                        if generation >= sync_state.cached_child_generation {
+                            let index = (generation - sync_state.cached_child_generation) as usize;
+                            sync_state.cached_children.resize_with(index + 1, Vec::new);
+                            let numbers = &mut sync_state.cached_children[index];
                             if !numbers.contains(&trial.number) {
                                 numbers.push(trial.number);
                             }
@@ -205,12 +203,12 @@ impl NSGAIISampler {
         sync_state.unfinished_trial_numbers = unfinished_trial_numbers;
         sync_state.unseen_trial_start = trials.len();
         let full_generations = sync_state
-            .generation_numbers
+            .cached_children
             .iter()
             .take_while(|numbers| numbers.len() >= self.population_size)
             .count() as u32;
         sync_state
-            .generation_offset
+            .cached_child_generation
             .checked_add(full_generations)
             .ok_or_else(|| Error::with_reason(ErrorKind::Unexpected, "NSGA-II generation overflow"))
     }
@@ -331,8 +329,8 @@ impl NSGAIISampler {
             let population_numbers = {
                 let sync_state = self.get_generation_sync_state_lock()?;
                 target_generation
-                    .checked_sub(sync_state.generation_offset)
-                    .and_then(|index| sync_state.generation_numbers.get(index as usize))
+                    .checked_sub(sync_state.cached_child_generation)
+                    .and_then(|index| sync_state.cached_children.get(index as usize))
                     .filter(|numbers| numbers.len() >= self.population_size)
                     .cloned()
             }
@@ -478,7 +476,7 @@ impl Sampler for NSGAIISampler {
         let (child_generation, parent_population_numbers, parent_cache_attrs) = {
             let child_generation = {
                 let trials = guard.get_trials(ctx.study_id)?;
-                self.sync_generation_frontier(ctx.study_id, trials)?
+                self.sync_child_generation(ctx.study_id, trials)?
             };
 
             let study_attrs = guard.get_study(ctx.study_id)?.attrs.clone();
@@ -486,7 +484,7 @@ impl Sampler for NSGAIISampler {
             let cached_parent = if child_generation == 0 {
                 None
             } else {
-                // sync_generation_frontier follows get_trials above, which synchronizes this study's
+                // sync_child_generation follows get_trials above, which synchronizes this study's
                 // trials into the storage cache. Resolve only the persisted parent IDs from that
                 // cache instead of rebuilding an ID-to-number map from every completed trial.
                 let mut cached_parent = None;
@@ -540,10 +538,11 @@ impl Sampler for NSGAIISampler {
             guard.set_study_attrs(ctx.study_id, parent_cache_attrs, false)?;
         }
         let mut sync_state = self.get_generation_sync_state_lock()?;
-        let discard_count = child_generation.saturating_sub(sync_state.generation_offset) as usize;
-        let discard_count = discard_count.min(sync_state.generation_numbers.len());
-        sync_state.generation_numbers.drain(..discard_count);
-        sync_state.generation_offset = child_generation;
+        let discard_count =
+            child_generation.saturating_sub(sync_state.cached_child_generation) as usize;
+        let discard_count = discard_count.min(sync_state.cached_children.len());
+        sync_state.cached_children.drain(..discard_count);
+        sync_state.cached_child_generation = child_generation;
         drop(sync_state);
 
         if child_generation == 0 {
@@ -629,12 +628,10 @@ impl Sampler for NSGAIISampler {
                     sync_state
                         .unfinished_trial_numbers
                         .retain(|&number| number != trial.number);
-                    if generation >= sync_state.generation_offset {
-                        let index = (generation - sync_state.generation_offset) as usize;
-                        sync_state
-                            .generation_numbers
-                            .resize_with(index + 1, Vec::new);
-                        let numbers = &mut sync_state.generation_numbers[index];
+                    if generation >= sync_state.cached_child_generation {
+                        let index = (generation - sync_state.cached_child_generation) as usize;
+                        sync_state.cached_children.resize_with(index + 1, Vec::new);
+                        let numbers = &mut sync_state.cached_children[index];
                         if !numbers.contains(&trial.number) {
                             numbers.push(trial.number);
                         }
