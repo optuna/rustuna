@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::DerefMut;
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use rand::prelude::*;
 use rand::rngs::StdRng;
@@ -63,9 +63,16 @@ pub struct NSGAIISampler {
     mutation_prob: Option<f64>,
     crossover_prob: f64,
     swapping_prob: f64,
-    /// Cache mapping generation number to completed trial numbers in that generation.
-    /// Updated incrementally in `after_trial` so `sample_joint` does not scan all trials every time.
-    generation_to_numbers: RwLock<HashMap<u32, Vec<u32>>>,
+    generation_sync_state: Mutex<GenerationSyncState>,
+}
+
+#[derive(Default)]
+struct GenerationSyncState {
+    cached_study_id: Option<u32>,
+    cached_child_generation: u32,
+    cached_children: VecDeque<Vec<u32>>,
+    unfinished_trial_numbers: Vec<u32>,
+    unseen_trial_start: usize,
 }
 impl Default for NSGAIISampler {
     fn default() -> Self {
@@ -93,7 +100,7 @@ impl NSGAIISampler {
             mutation_prob,
             crossover_prob,
             swapping_prob,
-            generation_to_numbers: RwLock::new(HashMap::new()),
+            generation_sync_state: Mutex::new(GenerationSyncState::default()),
         }
     }
     /// Creates a reproducibly seeded NSGA-II sampler.
@@ -113,7 +120,7 @@ impl NSGAIISampler {
             mutation_prob,
             crossover_prob,
             swapping_prob,
-            generation_to_numbers: RwLock::new(HashMap::new()),
+            generation_sync_state: Mutex::new(GenerationSyncState::default()),
         }
     }
     fn get_rng_lock(&self) -> Result<MutexGuard<'_, StdRng>> {
@@ -124,45 +131,88 @@ impl NSGAIISampler {
             )
         })
     }
-    fn get_generation_to_numbers_read_lock(
-        &self,
-    ) -> Result<RwLockReadGuard<'_, HashMap<u32, Vec<u32>>>> {
-        self.generation_to_numbers.read().map_err(|e| {
+    fn get_generation_sync_state_lock(&self) -> Result<MutexGuard<'_, GenerationSyncState>> {
+        self.generation_sync_state.lock().map_err(|e| {
             Error::with_reason(
                 ErrorKind::SamplerError,
-                format!("Failed to acquire generation_to_numbers read guard: {e}"),
+                format!("Failed to acquire generation_sync_state guard: {e}"),
             )
         })
     }
-    fn get_generation_to_numbers_write_lock(
+    fn sync_child_generation(
         &self,
-    ) -> Result<RwLockWriteGuard<'_, HashMap<u32, Vec<u32>>>> {
-        self.generation_to_numbers.write().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::SamplerError,
-                format!("Failed to acquire generation_to_numbers write guard: {e}"),
-            )
-        })
-    }
-    fn rebuild_generation_cache(&self, trials: &[Option<PersistedTrial>]) -> Result<()> {
-        let mut generation_to_numbers = self.get_generation_to_numbers_write_lock()?;
-        generation_to_numbers.clear();
-        let generation_key = AttrKey::System("generation".into());
-        for trial in trials.iter().flatten() {
-            if !matches!(trial.state_values, TrialStateValues::Complete(_)) {
+        study_id: u32,
+        trials: &[Option<PersistedTrial>],
+    ) -> Result<u32> {
+        let mut sync_state = self.get_generation_sync_state_lock()?;
+
+        if sync_state.cached_study_id != Some(study_id)
+            || trials.len() < sync_state.unseen_trial_start
+        {
+            sync_state.cached_study_id = Some(study_id);
+            sync_state.cached_child_generation = 0;
+            sync_state.cached_children.clear();
+            sync_state.unfinished_trial_numbers.clear();
+            sync_state.unseen_trial_start = 0;
+        }
+
+        let unseen_trial_start = sync_state.unseen_trial_start;
+        let mut unfinished_trial_numbers = std::mem::take(&mut sync_state.unfinished_trial_numbers);
+        let unfinished_count = unfinished_trial_numbers.len();
+        let changed_trial_count =
+            unfinished_count + trials.len().saturating_sub(unseen_trial_start);
+        let mut next_unfinished_count = 0;
+        for position in 0..changed_trial_count {
+            let trial_index = if position < unfinished_count {
+                unfinished_trial_numbers[position] as usize
+            } else {
+                unseen_trial_start + position - unfinished_count
+            };
+            let Some(trial) = trials.get(trial_index).and_then(Option::as_ref) else {
                 continue;
-            }
-            if let Some(gen_str) = trial.attrs.get(&generation_key) {
-                if let Ok(generation) = gen_str.parse::<u32>() {
-                    generation_to_numbers
-                        .entry(generation)
-                        .or_default()
-                        .push(trial.number);
+            };
+            match &trial.state_values {
+                TrialStateValues::Complete(_) => {
+                    if let Some(generation) = trial
+                        .attrs
+                        .get(&AttrKey::System("generation".into()))
+                        .and_then(|generation| generation.parse::<u32>().ok())
+                    {
+                        if generation >= sync_state.cached_child_generation {
+                            let index = (generation - sync_state.cached_child_generation) as usize;
+                            sync_state.cached_children.resize_with(index + 1, Vec::new);
+                            let numbers = &mut sync_state.cached_children[index];
+                            if !numbers.contains(&trial.number) {
+                                numbers.push(trial.number);
+                            }
+                        }
+                    }
+                }
+                TrialStateValues::Pruned | TrialStateValues::Fail => {}
+                TrialStateValues::Running | TrialStateValues::Waiting => {
+                    if next_unfinished_count < unfinished_trial_numbers.len() {
+                        unfinished_trial_numbers[next_unfinished_count] = trial.number;
+                    } else {
+                        unfinished_trial_numbers.push(trial.number);
+                    }
+                    next_unfinished_count += 1;
                 }
             }
         }
-        Ok(())
+        unfinished_trial_numbers.truncate(next_unfinished_count);
+        sync_state.unfinished_trial_numbers = unfinished_trial_numbers;
+        sync_state.unseen_trial_start = trials.len();
+        let full_generations = sync_state
+            .cached_children
+            .iter()
+            .take_while(|numbers| numbers.len() >= self.population_size)
+            .count() as u32;
+        sync_state
+            .cached_child_generation
+            .checked_add(full_generations)
+            .ok_or_else(|| Error::with_reason(ErrorKind::Unexpected, "NSGA-II generation overflow"))
     }
+
     /// Builds the study-system-attribute key under which parent trial IDs for `generation`
     /// are persisted.
     fn parent_cache_key(generation: u32) -> AttrKey {
@@ -249,28 +299,6 @@ impl NSGAIISampler {
         }
         Ok(elite_population_numbers)
     }
-    fn get_child_generation(&self, trials: &[Option<PersistedTrial>]) -> Result<u32> {
-        // TODO: Incrementally sync trials completed by other workers without a full rescan.
-        if self.get_generation_to_numbers_read_lock()?.is_empty() {
-            self.rebuild_generation_cache(trials)?;
-        }
-
-        let mut child_generation = 0u32;
-        loop {
-            let full = self
-                .get_generation_to_numbers_read_lock()?
-                .get(&child_generation)
-                .is_some_and(|numbers| numbers.len() >= self.population_size);
-            if !full {
-                break;
-            }
-            child_generation = child_generation.checked_add(1).ok_or_else(|| {
-                Error::with_reason(ErrorKind::Unexpected, "NSGA-II generation overflow")
-            })?;
-        }
-        Ok(child_generation)
-    }
-
     fn get_parent_population_numbers(
         &self,
         ctx: &Context,
@@ -295,14 +323,35 @@ impl NSGAIISampler {
 
         // Recompute elite selection for each missing generation.
         let mut new_attrs = Attrs::new();
+        let generation_key = AttrKey::System("generation".into());
         for generation in first_missing_generation..=child_generation {
-            let population_numbers = match self
-                .get_generation_to_numbers_read_lock()?
-                .get(&(generation - 1))
-            {
-                Some(numbers) if numbers.len() >= self.population_size => numbers.clone(),
-                _ => break,
-            };
+            let target_generation = generation - 1;
+            let population_numbers = {
+                let sync_state = self.get_generation_sync_state_lock()?;
+                target_generation
+                    .checked_sub(sync_state.cached_child_generation)
+                    .and_then(|index| sync_state.cached_children.get(index as usize))
+                    .filter(|numbers| numbers.len() >= self.population_size)
+                    .cloned()
+            }
+            .unwrap_or_else(|| {
+                trials
+                    .iter()
+                    .flatten()
+                    .filter(|trial| {
+                        matches!(trial.state_values, TrialStateValues::Complete(_))
+                            && trial
+                                .attrs
+                                .get(&generation_key)
+                                .and_then(|generation| generation.parse::<u32>().ok())
+                                == Some(target_generation)
+                    })
+                    .map(|trial| trial.number)
+                    .collect()
+            });
+            if population_numbers.len() < self.population_size {
+                break;
+            }
 
             let mut candidates = population_numbers;
             candidates.append(&mut parent_population_numbers);
@@ -427,7 +476,7 @@ impl Sampler for NSGAIISampler {
         let (child_generation, parent_population_numbers, parent_cache_attrs) = {
             let child_generation = {
                 let trials = guard.get_trials(ctx.study_id)?;
-                self.get_child_generation(trials)?
+                self.sync_child_generation(ctx.study_id, trials)?
             };
 
             let study_attrs = guard.get_study(ctx.study_id)?.attrs.clone();
@@ -435,7 +484,7 @@ impl Sampler for NSGAIISampler {
             let cached_parent = if child_generation == 0 {
                 None
             } else {
-                // get_child_generation calls get_trials above, which synchronizes this study's
+                // sync_child_generation follows get_trials above, which synchronizes this study's
                 // trials into the storage cache. Resolve only the persisted parent IDs from that
                 // cache instead of rebuilding an ID-to-number map from every completed trial.
                 let mut cached_parent = None;
@@ -488,6 +537,13 @@ impl Sampler for NSGAIISampler {
         if !parent_cache_attrs.is_empty() {
             guard.set_study_attrs(ctx.study_id, parent_cache_attrs, false)?;
         }
+        let mut sync_state = self.get_generation_sync_state_lock()?;
+        let discard_count =
+            child_generation.saturating_sub(sync_state.cached_child_generation) as usize;
+        let discard_count = discard_count.min(sync_state.cached_children.len());
+        sync_state.cached_children.drain(..discard_count);
+        sync_state.cached_child_generation = child_generation;
+        drop(sync_state);
 
         if child_generation == 0 {
             drop(guard);
@@ -562,14 +618,24 @@ impl Sampler for NSGAIISampler {
                 .write()
                 .map_err(|_e| Error::new(ErrorKind::Unexpected))?;
             let trial = guard.get_trial(ctx.trial_id)?;
-            let generation_key = AttrKey::System("generation".into());
-            if let Some(gen_str) = trial.attrs.get(&generation_key) {
-                if let Ok(generation) = gen_str.parse::<u32>() {
-                    let mut generation_to_numbers = self.get_generation_to_numbers_write_lock()?;
-                    generation_to_numbers
-                        .entry(generation)
-                        .or_default()
-                        .push(trial.number);
+            if let Some(generation) = trial
+                .attrs
+                .get(&AttrKey::System("generation".into()))
+                .and_then(|generation| generation.parse::<u32>().ok())
+            {
+                let mut sync_state = self.get_generation_sync_state_lock()?;
+                if sync_state.cached_study_id == Some(ctx.study_id) {
+                    sync_state
+                        .unfinished_trial_numbers
+                        .retain(|&number| number != trial.number);
+                    if generation >= sync_state.cached_child_generation {
+                        let index = (generation - sync_state.cached_child_generation) as usize;
+                        sync_state.cached_children.resize_with(index + 1, Vec::new);
+                        let numbers = &mut sync_state.cached_children[index];
+                        if !numbers.contains(&trial.number) {
+                            numbers.push(trial.number);
+                        }
+                    }
                 }
             }
         }
@@ -783,6 +849,7 @@ mod tests {
     use super::*;
     use rustuna_core::storage::InMemoryStorage;
     use rustuna_core::study::{create_study, Direction};
+
     #[test]
     fn test_optimize() {
         let storage = InMemoryStorage::new();
