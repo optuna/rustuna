@@ -523,6 +523,7 @@ pub fn get_best_trial(study: &Study) -> Result<u32> {
         )
     })?;
     let trials = guard.get_trials(study.id)?;
+    let direction = &study.directions[0];
 
     let best_trial = trials
         .iter()
@@ -531,7 +532,13 @@ pub fn get_best_trial(study: &Study) -> Result<u32> {
             TrialStateValues::Complete(ref v) => v.first().map(|&value| (trial.number, value)),
             _ => None,
         })
-        .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        .min_by(|a, b| {
+            let ordering = a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal);
+            match direction {
+                Direction::Minimize => ordering,
+                Direction::Maximize => ordering.reverse(),
+            }
+        })
         .ok_or(Error::new(ErrorKind::NoCompletedTrial))?;
     Ok(best_trial.0)
 }
@@ -771,6 +778,30 @@ mod tests {
 
         let best_trial_number = get_best_trial(&study)?;
         assert!(best_trial_number < 100);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_best_trial_respects_direction() -> Result<()> {
+        for (direction, expected_trial_number) in
+            [(Direction::Minimize, 0), (Direction::Maximize, 1)]
+        {
+            let storage = InMemoryStorage::new();
+            let study = create_study(
+                "direction-aware-best-trial",
+                storage,
+                RandomSampler::new(),
+                vec![direction],
+            )?;
+
+            let values = [1.0, 9.0, 3.0];
+            study.optimize(
+                |trial| Ok(vec![values[trial.number as usize]]),
+                values.len(),
+            )?;
+
+            assert_eq!(get_best_trial(&study)?, expected_trial_number);
+        }
         Ok(())
     }
 
