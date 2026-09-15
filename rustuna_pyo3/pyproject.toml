@@ -11,7 +11,7 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
-dynamic = ["version"]
+version = "0.2.0.dev"
 
 [project.urls]
 homepage = "https://optuna.org/"
