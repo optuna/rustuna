@@ -473,7 +473,7 @@ pub fn validate_trials(trials: &Vec<&PersistedTrial>, directions: &[Direction]) 
             "Some completed trial's values has different size from directions.".to_string(),
         ))
     } else if trials.iter().any(|t| match &t.state_values {
-        TrialStateValues::Complete(values) => values.iter().all(|x| x.is_nan()),
+        TrialStateValues::Complete(values) => values.iter().any(|x| x.is_nan()),
         _ => false,
     }) {
         Err(Error::with_reason(
@@ -492,6 +492,29 @@ mod tests {
     use crate::sampler::RandomSampler;
     use crate::storage::InMemoryStorage;
     use crate::study::create_study_with_arc;
+
+    #[test]
+    fn test_validate_trials_rejects_partial_nan() {
+        let mut trial0 = PersistedTrial::new(0, 0, 0);
+        trial0.state_values = TrialStateValues::Complete(vec![1.0, f64::NAN]);
+        let trials = vec![&trial0];
+        let directions = vec![Direction::Minimize, Direction::Minimize];
+
+        let result = validate_trials(&trials, &directions);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_trials_accepts_non_nan_values() -> Result<()> {
+        let mut trial0 = PersistedTrial::new(0, 0, 0);
+        trial0.state_values = TrialStateValues::Complete(vec![1.0, 2.0]);
+        let trials = vec![&trial0];
+        let directions = vec![Direction::Minimize, Direction::Minimize];
+
+        validate_trials(&trials, &directions)?;
+        Ok(())
+    }
 
     #[test]
     fn test_enqueue_and_suggest_float() -> Result<()> {
