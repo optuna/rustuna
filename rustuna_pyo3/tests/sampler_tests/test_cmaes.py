@@ -4,11 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 import rustuna
+from rustuna.trial import TrialState
 
 
-def test_cmaes_sampler() -> None:
+@pytest.mark.parametrize("apply_discard", [True, False])
+def test_cmaes_sampler(apply_discard: bool) -> None:
+    storage = rustuna.storages.InMemoryStorage(apply_discard=apply_discard)
     sampler = rustuna.samplers.CmaEsSampler(seed=1, popsize=4)
-    study = rustuna.create_study(sampler=sampler)
+    study = rustuna.create_study(sampler=sampler, storage=storage)
 
     def objective(trial: rustuna.Trial) -> float:
         x = trial.suggest_float("x", -10, 10)
@@ -17,10 +20,8 @@ def test_cmaes_sampler() -> None:
 
     study.optimize(objective, n_trials=10)
 
-    assert len(study.trials) == 10
-    assert all(
-        trial.state == rustuna.trial.TrialState.COMPLETE for trial in study.trials
-    )
+    if not apply_discard:
+        assert len(study.get_trials(states=[TrialState.COMPLETE])) == 10
 
 
 def test_cmaes_sampler_samples_independently_from_multiple_threads() -> None:
