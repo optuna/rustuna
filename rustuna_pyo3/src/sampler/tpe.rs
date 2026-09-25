@@ -7,7 +7,7 @@ use pyo3::Py;
 
 use rustuna_core::sampler::Sampler;
 use rustuna_core::trial::TrialStateValues;
-use rustuna_sampler::tpe::{TpeConfig, TpeSampler};
+use rustuna_sampler::tpe::TpeSampler;
 
 use crate::distribution::PyDistribution;
 use crate::sampler::{extract_storage, PySamplerContext};
@@ -28,11 +28,14 @@ impl PyTpeSampler {
         n_startup_trials: usize,
         multivariate: Option<bool>,
     ) -> PyResult<Self> {
-        let rs_sampler = TpeSampler::from_config(TpeConfig {
-            seed,
-            n_startup_trials,
-            multivariate,
-        });
+        let mut builder = TpeSampler::builder().n_startup_trials(n_startup_trials);
+        if let Some(seed) = seed {
+            builder = builder.seed(seed);
+        }
+        if let Some(multivariate) = multivariate {
+            builder = builder.multivariate(multivariate);
+        }
+        let rs_sampler = builder.build();
         Ok(PyTpeSampler {
             sampler: Arc::new(rs_sampler),
         })

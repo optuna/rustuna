@@ -73,7 +73,128 @@ impl Default for NSGAIISampler {
     }
 }
 
+/// Builder for [`NSGAIISampler`], following the API style of [`std::thread::Builder`].
+///
+/// # Examples
+///
+/// ```
+/// use rustuna_sampler::nsgaii::NSGAIISampler;
+///
+/// let sampler = NSGAIISampler::builder()
+///     .population_size(100)
+///     .mutation_prob(0.1)
+///     .crossover_prob(0.9)
+///     .swapping_prob(0.5)
+///     .seed(42)
+///     .build();
+/// ```
+pub struct NsgaiiBuilder {
+    population_size: usize,
+    mutation_prob: Option<f64>,
+    crossover_prob: f64,
+    swapping_prob: f64,
+    seed: Option<u64>,
+}
+impl Default for NsgaiiBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl NsgaiiBuilder {
+    /// Creates a builder with the default configuration.
+    ///
+    /// The default configuration has a population size of 50, no explicit mutation
+    /// probability, a crossover probability of 0.9, a swapping probability of 0.5, and
+    /// no RNG seed.
+    pub fn new() -> Self {
+        Self {
+            population_size: 50,
+            mutation_prob: None,
+            crossover_prob: 0.9,
+            swapping_prob: 0.5,
+            seed: None,
+        }
+    }
+
+    /// Sets the number of individuals (trials) in a generation.
+    pub fn population_size(self, population_size: usize) -> Self {
+        Self {
+            population_size,
+            ..self
+        }
+    }
+
+    /// Sets the probability of mutating each parameter when generating a child.
+    ///
+    /// When left unset, the automatic default `1 / n_params` is used.
+    pub fn mutation_prob(self, mutation_prob: f64) -> Self {
+        Self {
+            mutation_prob: Some(mutation_prob),
+            ..self
+        }
+    }
+
+    /// Sets the probability of generating a child by crossover rather than cloning one
+    /// parent.
+    pub fn crossover_prob(self, crossover_prob: f64) -> Self {
+        Self {
+            crossover_prob,
+            ..self
+        }
+    }
+
+    /// Sets the probability of taking each parameter from the second parent during
+    /// crossover.
+    pub fn swapping_prob(self, swapping_prob: f64) -> Self {
+        Self {
+            swapping_prob,
+            ..self
+        }
+    }
+
+    /// Sets the RNG seed for reproducible sampling.
+    pub fn seed(self, seed: u64) -> Self {
+        Self {
+            seed: Some(seed),
+            ..self
+        }
+    }
+
+    /// Builds the sampler.
+    pub fn build(self) -> NSGAIISampler {
+        let rng = match self.seed {
+            Some(seed) => StdRng::seed_from_u64(seed),
+            None => StdRng::from_seed(Default::default()),
+        };
+        NSGAIISampler {
+            rng: Mutex::new(rng),
+            population_size: self.population_size,
+            mutation_prob: self.mutation_prob,
+            crossover_prob: self.crossover_prob,
+            swapping_prob: self.swapping_prob,
+            generation_to_numbers: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
 impl NSGAIISampler {
+    /// Returns a builder for creating a sampler with an explicit configuration.
+    ///
+    /// This is the counterpart of [`std::thread::Builder`]: settings are configured by
+    /// chaining methods and the sampler is created with [`NsgaiiBuilder::build`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustuna_sampler::nsgaii::NSGAIISampler;
+    ///
+    /// let sampler = NSGAIISampler::builder().population_size(100).seed(42).build();
+    /// # let _ = sampler;
+    /// ```
+    pub fn builder() -> NsgaiiBuilder {
+        NsgaiiBuilder::new()
+    }
+
     /// Creates an NSGA-II sampler.
     ///
     /// `population_size` is the number of individuals retained in each generation.
@@ -87,14 +208,14 @@ impl NSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> NSGAIISampler {
-        NSGAIISampler {
-            rng: Mutex::new(StdRng::from_seed(Default::default())),
-            population_size,
-            mutation_prob,
-            crossover_prob,
-            swapping_prob,
-            generation_to_numbers: RwLock::new(HashMap::new()),
+        let mut builder = NSGAIISampler::builder()
+            .population_size(population_size)
+            .crossover_prob(crossover_prob)
+            .swapping_prob(swapping_prob);
+        if let Some(mutation_prob) = mutation_prob {
+            builder = builder.mutation_prob(mutation_prob);
         }
+        builder.build()
     }
     /// Creates a reproducibly seeded NSGA-II sampler.
     ///
@@ -107,14 +228,15 @@ impl NSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> NSGAIISampler {
-        NSGAIISampler {
-            rng: Mutex::new(StdRng::seed_from_u64(seed)),
-            population_size,
-            mutation_prob,
-            crossover_prob,
-            swapping_prob,
-            generation_to_numbers: RwLock::new(HashMap::new()),
+        let mut builder = NSGAIISampler::builder()
+            .population_size(population_size)
+            .crossover_prob(crossover_prob)
+            .swapping_prob(swapping_prob)
+            .seed(seed);
+        if let Some(mutation_prob) = mutation_prob {
+            builder = builder.mutation_prob(mutation_prob);
         }
+        builder.build()
     }
     fn get_rng_lock(&self) -> Result<MutexGuard<'_, StdRng>> {
         self.rng.lock().map_err(|e| {

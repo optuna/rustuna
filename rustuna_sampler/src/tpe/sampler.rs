@@ -14,25 +14,86 @@ use rustuna_core::trial::TrialStateValues;
 use rustuna_core::Result;
 use rustuna_core::{Error, ErrorKind};
 
-/// Configuration for [`TpeSampler`].
-pub struct TpeConfig {
-    /// Whether to use multivariate TPE for joint suggestions over the inferred search space.
-    ///
-    /// `Some(true)` forces multivariate (joint) sampling and `Some(false)` forces independent
-    /// (univariate) sampling. `None` selects automatically, matching Optuna: multivariate for
-    /// single-objective studies and independent for multi-objective studies.
-    pub multivariate: Option<bool>,
-    /// Number of completed trials to collect before switching from random sampling to TPE.
-    pub n_startup_trials: usize,
-    /// Optional RNG seed.
-    pub seed: Option<u64>,
+/// Builder for [`TpeSampler`], following the API style of [`std::thread::Builder`].
+///
+/// # Examples
+///
+/// ```
+/// use rustuna_sampler::tpe::TpeSampler;
+///
+/// let sampler = TpeSampler::builder()
+///     .n_startup_trials(20)
+///     .multivariate(true)
+///     .seed(42)
+///     .build();
+/// ```
+pub struct TpeBuilder {
+    multivariate: Option<bool>,
+    n_startup_trials: usize,
+    seed: Option<u64>,
 }
-impl Default for TpeConfig {
+impl Default for TpeBuilder {
     fn default() -> Self {
+        Self::new()
+    }
+}
+impl TpeBuilder {
+    /// Creates a builder with the default configuration.
+    ///
+    /// The default configuration selects multivariate TPE automatically and uses random
+    /// sampling for the first 10 completed trials.
+    pub fn new() -> Self {
         Self {
             multivariate: None,
             n_startup_trials: 10,
             seed: None,
+        }
+    }
+
+    /// Sets whether to use multivariate TPE for joint suggestions over the inferred search
+    /// space.
+    ///
+    /// `true` forces multivariate (joint) sampling and `false` forces independent (univariate)
+    /// sampling. When left unset, the sampler selects automatically, matching Optuna:
+    /// multivariate for single-objective studies and independent for multi-objective studies.
+    pub fn multivariate(self, multivariate: bool) -> Self {
+        Self {
+            multivariate: Some(multivariate),
+            ..self
+        }
+    }
+
+    /// Sets the number of completed trials to collect before switching from random sampling
+    /// to TPE.
+    pub fn n_startup_trials(self, n_startup_trials: usize) -> Self {
+        Self {
+            n_startup_trials,
+            ..self
+        }
+    }
+
+    /// Sets the RNG seed for reproducible sampling.
+    pub fn seed(self, seed: u64) -> Self {
+        Self {
+            seed: Some(seed),
+            ..self
+        }
+    }
+
+    /// Builds the sampler.
+    pub fn build(self) -> TpeSampler {
+        let mut rng = match self.seed {
+            Some(seed) => StdRng::seed_from_u64(seed),
+            None => StdRng::from_seed(Default::default()),
+        };
+        let seed_for_random_sampler = rng.gen();
+        TpeSampler {
+            rng: Mutex::new(rng),
+            multivariate: self.multivariate,
+            n_startup_trials: self.n_startup_trials,
+            random_sampler: RandomSampler::seed_from_u64(seed_for_random_sampler),
+            split_cache: RwLock::new(HashMap::new()),
+            observations_cache: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -178,21 +239,21 @@ impl Default for TpeSampler {
     }
 }
 impl TpeSampler {
-    /// Creates a sampler from an explicit configuration.
-    pub fn from_config(cfg: TpeConfig) -> TpeSampler {
-        let mut rng = match cfg.seed {
-            Some(s) => StdRng::seed_from_u64(s),
-            None => StdRng::from_seed(Default::default()),
-        };
-        let seed_for_random_sampler = rng.gen();
-        Self {
-            rng: Mutex::new(rng),
-            multivariate: cfg.multivariate,
-            n_startup_trials: cfg.n_startup_trials,
-            random_sampler: RandomSampler::seed_from_u64(seed_for_random_sampler),
-            split_cache: RwLock::new(HashMap::new()),
-            observations_cache: RwLock::new(HashMap::new()),
-        }
+    /// Returns a builder for creating a sampler with an explicit configuration.
+    ///
+    /// This is the counterpart of [`std::thread::Builder`]: settings are configured by
+    /// chaining methods and the sampler is created with [`TpeBuilder::build`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustuna_sampler::tpe::TpeSampler;
+    ///
+    /// let sampler = TpeSampler::builder().n_startup_trials(20).seed(42).build();
+    /// # let _ = sampler;
+    /// ```
+    pub fn builder() -> TpeBuilder {
+        TpeBuilder::new()
     }
 
     /// Creates a sampler with the default configuration.
@@ -201,7 +262,7 @@ impl TpeSampler {
     /// single-objective, independent for multi-objective, matching Optuna) and uses random
     /// sampling for the first 10 completed trials.
     pub fn new() -> TpeSampler {
-        Self::from_config(TpeConfig::default())
+        Self::builder().build()
     }
 
     /// Creates a reproducibly seeded sampler.
@@ -209,11 +270,7 @@ impl TpeSampler {
     /// This is equivalent to [`TpeSampler::new`] but initializes the internal random number
     /// generator from the provided seed.
     pub fn seed_from_u64(seed: u64) -> TpeSampler {
-        Self::from_config(TpeConfig {
-            multivariate: None,
-            seed: Some(seed),
-            n_startup_trials: 10,
-        })
+        Self::builder().seed(seed).build()
     }
 
     fn sample(
@@ -774,11 +831,7 @@ mod tests {
     fn test_dynamic_float_range_falls_back_to_independent_sampling() {
         let storage = InMemoryStorage::new();
         let directions = vec![Direction::Minimize];
-        let sampler = TpeSampler::from_config(TpeConfig {
-            multivariate: None,
-            n_startup_trials: 2,
-            seed: Some(42),
-        });
+        let sampler = TpeSampler::builder().n_startup_trials(2).seed(42).build();
         let study = create_study("dynamic-float-range", storage, sampler, directions).unwrap();
 
         study
@@ -1257,11 +1310,7 @@ mod tests {
             vec![Direction::Minimize],
         )
         .unwrap();
-        let probe = TpeSampler::from_config(TpeConfig {
-            multivariate: None,
-            n_startup_trials: 1,
-            seed: Some(0),
-        });
+        let probe = TpeSampler::builder().n_startup_trials(1).seed(0).build();
         let ctx = |trial_id: u32| Context {
             study_id: study.id,
             directions: vec![Direction::Minimize],
@@ -1328,11 +1377,7 @@ mod tests {
         use rustuna_core::attr::{AttrKey, Attrs};
 
         let storage = InMemoryStorage::new();
-        let sampler = TpeSampler::from_config(TpeConfig {
-            multivariate: None,
-            n_startup_trials: 1,
-            seed: Some(0),
-        });
+        let sampler = TpeSampler::builder().n_startup_trials(1).seed(0).build();
         let study = create_study(
             "bad-constraints",
             storage,

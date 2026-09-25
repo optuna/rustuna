@@ -30,21 +30,17 @@ impl PyNSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> PyResult<Self> {
-        let rs_sampler = match seed {
-            Some(seed) => NSGAIISampler::seed_from_u64(
-                seed,
-                population_size,
-                mutation_prob,
-                crossover_prob,
-                swapping_prob,
-            ),
-            None => NSGAIISampler::new(
-                population_size,
-                mutation_prob,
-                crossover_prob,
-                swapping_prob,
-            ),
-        };
+        let mut builder = NSGAIISampler::builder()
+            .population_size(population_size)
+            .crossover_prob(crossover_prob)
+            .swapping_prob(swapping_prob);
+        if let Some(seed) = seed {
+            builder = builder.seed(seed);
+        }
+        if let Some(mutation_prob) = mutation_prob {
+            builder = builder.mutation_prob(mutation_prob);
+        }
+        let rs_sampler = builder.build();
         Ok(PyNSGAIISampler {
             sampler: Arc::new(rs_sampler),
         })
