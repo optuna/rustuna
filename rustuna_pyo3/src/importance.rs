@@ -56,9 +56,12 @@ impl PyPedAnovaImportanceEvaluator {
         region_quantile: f64,
         evaluate_on_local: bool,
     ) -> PyResult<Self> {
-        let evaluator =
-            PedAnovaImportanceEvaluator::new(target_quantile, region_quantile, evaluate_on_local)
-                .map_err(err_to_exceptions)?;
+        let evaluator = PedAnovaImportanceEvaluator::builder()
+            .target_quantile(target_quantile)
+            .region_quantile(region_quantile)
+            .evaluate_on_local(evaluate_on_local)
+            .build()
+            .map_err(err_to_exceptions)?;
         if region_quantile != 1.0 && !evaluate_on_local {
             PyErr::warn(
                 py,
