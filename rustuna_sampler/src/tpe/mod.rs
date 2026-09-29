@@ -5,4 +5,4 @@
 
 mod sampler;
 
-pub use sampler::{TpeConfig, TpeSampler};
+pub use sampler::{TpeBuilder, TpeSampler};
