@@ -94,9 +94,9 @@ impl Default for PedAnovaImportanceEvaluator {
 /// # Examples
 ///
 /// ```
-/// use rustuna_importance::PedAnovaImportanceEvaluator;
+/// use rustuna_importance::PedAnovaBuilder;
 ///
-/// let evaluator = PedAnovaImportanceEvaluator::builder()
+/// let evaluator = PedAnovaBuilder::new()
 ///     .target_quantile(0.2)
 ///     .region_quantile(0.9)
 ///     .evaluate_on_local(false)
@@ -209,27 +209,6 @@ impl PedAnovaBuilder {
 }
 
 impl PedAnovaImportanceEvaluator {
-    /// Returns a builder for creating an evaluator with an explicit configuration.
-    ///
-    /// This is the counterpart of [`std::thread::Builder`]: settings are configured by
-    /// chaining methods and the evaluator is created with [`PedAnovaBuilder::build`].
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use rustuna_importance::PedAnovaImportanceEvaluator;
-    ///
-    /// let evaluator = PedAnovaImportanceEvaluator::builder()
-    ///     .target_quantile(0.3)
-    ///     .n_steps(100)
-    ///     .build()
-    ///     .unwrap();
-    /// # let _ = evaluator;
-    /// ```
-    pub fn builder() -> PedAnovaBuilder {
-        PedAnovaBuilder::new()
-    }
-
     /// Creates a PED-ANOVA evaluator.
     ///
     /// `target_quantile` selects the top fraction of completed trials used as the target region.
@@ -246,7 +225,7 @@ impl PedAnovaImportanceEvaluator {
         region_quantile: f64,
         evaluate_on_local: bool,
     ) -> Result<Self> {
-        Self::builder()
+        PedAnovaBuilder::new()
             .target_quantile(target_quantile)
             .region_quantile(region_quantile)
             .evaluate_on_local(evaluate_on_local)
@@ -734,7 +713,7 @@ mod tests {
     #[test]
     fn test_builder() -> Result<()> {
         // A full configuration through the builder.
-        let evaluator = PedAnovaImportanceEvaluator::builder()
+        let evaluator = PedAnovaBuilder::new()
             .target_quantile(0.3)
             .region_quantile(0.9)
             .evaluate_on_local(false)
@@ -747,7 +726,7 @@ mod tests {
 
         // The same configuration as `new`, with the internal defaults for the rest.
         let from_new = PedAnovaImportanceEvaluator::new(0.3, 1.0, true)?;
-        let from_builder = PedAnovaImportanceEvaluator::builder()
+        let from_builder = PedAnovaBuilder::new()
             .target_quantile(0.3)
             .region_quantile(1.0)
             .evaluate_on_local(true)
@@ -755,7 +734,7 @@ mod tests {
         assert_eq!(from_new.evaluate(&study)?, from_builder.evaluate(&study)?);
 
         // Invalid configurations are rejected by `build`.
-        assert!(PedAnovaImportanceEvaluator::builder()
+        assert!(PedAnovaBuilder::new()
             .target_quantile(0.5)
             .region_quantile(0.3)
             .build()
