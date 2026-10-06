@@ -487,8 +487,10 @@ impl TpeSampler {
         };
         let mut best_idx = 0usize;
         let mut best_val = f64::NEG_INFINITY;
-        for (i, s) in samples_good.iter().enumerate() {
-            let acquisition = pe_good.log_pdf_ordered(s) - pe_poor.log_pdf_ordered(s);
+        let good_scores = pe_good.log_pdf_ordered_batch(&samples_good);
+        let poor_scores = pe_poor.log_pdf_ordered_batch(&samples_good);
+        for (i, (good, poor)) in good_scores.into_iter().zip(poor_scores).enumerate() {
+            let acquisition = good - poor;
             if acquisition > best_val {
                 best_val = acquisition;
                 best_idx = i;
