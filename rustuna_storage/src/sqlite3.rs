@@ -15,16 +15,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-/// Options for [`SQLite3Storage`].
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct SQLite3StorageOptions {
-    /// If `true`, discarded trials are omitted from subsequent reads.
-    ///
-    /// As in `JournalStorageOptions`, this only gates reads: `discard_trials` marks the trials
-    /// in the database regardless of this option.
-    pub apply_discard: bool,
-}
-
 /// SQLite-backed storage backend.
 ///
 /// This backend persists studies and trials in a local SQLite database and is typically wrapped
@@ -32,7 +22,7 @@ pub struct SQLite3StorageOptions {
 /// `rustuna_core`.
 pub struct SQLite3Storage {
     conn: Mutex<Connection>,
-    options: SQLite3StorageOptions,
+    apply_discard: bool,
     has_discarded_at_column: AtomicBool,
 }
 
@@ -45,32 +35,74 @@ const TRIALS_DISCARDED_AT_INDEX_SQL: &str =
 
 type TrialRow = (u32, u32, String, Option<String>, Option<String>);
 
-impl SQLite3Storage {
-    /// Opens a SQLite database file.
-    pub fn new(file_path: &str) -> Result<SQLite3Storage> {
-        Self::new_with_option(file_path, SQLite3StorageOptions::default())
+/// Builder for [`SQLite3Storage`], following the API style of [`std::thread::Builder`].
+///
+/// # Examples
+///
+/// ```
+/// use rustuna_storage::sqlite3::SQLite3Storage;
+///
+/// let storage = SQLite3Storage::builder(":memory:")
+///     .apply_discard(true)
+///     .build()
+///     .unwrap();
+/// # let _ = storage;
+/// ```
+pub struct SQLite3StorageBuilder {
+    file_path: String,
+    apply_discard: bool,
+}
+impl SQLite3StorageBuilder {
+    /// Creates a builder that opens `file_path`.
+    pub fn new(file_path: &str) -> Self {
+        Self {
+            file_path: file_path.to_owned(),
+            apply_discard: false,
+        }
     }
 
-    /// Opens a SQLite database file with the given options.
+    /// Sets whether discarded trials are omitted from subsequent reads.
     ///
-    /// When `apply_discard` is enabled, call [`Self::validate_discard_support`] after
-    /// [`Self::create_database`] to reject databases whose schema predates the discard column.
-    pub fn new_with_option(
-        file_path: &str,
-        options: SQLite3StorageOptions,
-    ) -> Result<SQLite3Storage> {
-        let conn = Connection::open(file_path).map_err(|e| {
+    /// This only gates reads: `discard_trials` marks the trials in the database regardless
+    /// of this setting. When it is enabled, call [`SQLite3Storage::validate_discard_support`]
+    /// after [`SQLite3Storage::create_database`] to reject databases whose schema predates
+    /// the discard column.
+    pub fn apply_discard(self, apply_discard: bool) -> Self {
+        Self {
+            apply_discard,
+            ..self
+        }
+    }
+
+    /// Builds the storage.
+    pub fn build(self) -> Result<SQLite3Storage> {
+        let conn = Connection::open(&self.file_path).map_err(|e| {
             Error::with_reason(
                 ErrorKind::StorageError,
-                format!("Failed to open {file_path}: {e}"),
+                format!("Failed to open {}: {e}", self.file_path),
             )
         })?;
-        let has_discarded_at_column = Self::has_discarded_at_column(&conn)?;
+        let has_discarded_at_column = SQLite3Storage::has_discarded_at_column(&conn)?;
         Ok(SQLite3Storage {
             conn: Mutex::new(conn),
-            options,
+            apply_discard: self.apply_discard,
             has_discarded_at_column: AtomicBool::new(has_discarded_at_column),
         })
+    }
+}
+
+impl SQLite3Storage {
+    /// Returns a builder for creating a storage with an explicit configuration.
+    ///
+    /// This is the counterpart of [`std::thread::Builder`]: settings are configured by
+    /// chaining methods and the storage is created with [`SQLite3StorageBuilder::build`].
+    pub fn builder(file_path: &str) -> SQLite3StorageBuilder {
+        SQLite3StorageBuilder::new(file_path)
+    }
+
+    /// Opens a SQLite database file.
+    pub fn new(file_path: &str) -> Result<SQLite3Storage> {
+        Self::builder(file_path).build()
     }
 
     /// Returns an error when discards were requested but the database cannot record them.
@@ -78,7 +110,7 @@ impl SQLite3Storage {
     /// [`Self::create_database`] migrates the column in, so this only fails for databases opened
     /// without initialization.
     pub fn validate_discard_support(&self) -> Result<()> {
-        if self.options.apply_discard && !self.has_discarded_at_column.load(Ordering::Acquire) {
+        if self.apply_discard && !self.has_discarded_at_column.load(Ordering::Acquire) {
             return Err(Error::with_reason(
                 ErrorKind::StorageError,
                 "apply_discard requires the Rustuna-specific `discarded_at` column on the \
@@ -239,7 +271,7 @@ impl SQLite3Storage {
 
 impl CachedStorageBackend for SQLite3Storage {
     fn apply_discard(&self) -> bool {
-        self.options.apply_discard
+        self.apply_discard
     }
 
     fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()> {
@@ -1497,7 +1529,7 @@ impl CachedStorageBackend for SQLite3Storage {
         let select_columns =
             "SELECT trial_id, number, state, datetime_start, datetime_complete FROM trials";
         let discard_condition =
-            if self.options.apply_discard && self.has_discarded_at_column.load(Ordering::Acquire) {
+            if self.apply_discard && self.has_discarded_at_column.load(Ordering::Acquire) {
                 " AND discarded_at IS NULL"
             } else {
                 ""
@@ -2156,7 +2188,7 @@ mod tests {
     use rustuna_core::study::{create_study, Direction};
 
     fn init_storage() -> Result<SQLite3Storage> {
-        init_storage_with_option(SQLite3StorageOptions::default())
+        init_storage_with_option(false)
     }
 
     /// Reads SQLite's own idea of the current UTC time, truncated to whole seconds.
@@ -2229,8 +2261,10 @@ mod tests {
         Ok(())
     }
 
-    fn init_storage_with_option(options: SQLite3StorageOptions) -> Result<SQLite3Storage> {
-        let storage = SQLite3Storage::new_with_option(":memory:", options)?;
+    fn init_storage_with_option(apply_discard: bool) -> Result<SQLite3Storage> {
+        let storage = SQLite3Storage::builder(":memory:")
+            .apply_discard(apply_discard)
+            .build()?;
         storage.create_database()?;
         storage.validate_discard_support()?;
         Ok(storage)
@@ -2304,9 +2338,7 @@ mod tests {
 
     #[test]
     fn discard_trials_are_omitted_by_cached_storage() -> Result<()> {
-        let backend = init_storage_with_option(SQLite3StorageOptions {
-            apply_discard: true,
-        })?;
+        let backend = init_storage_with_option(true)?;
         let mut storage = CachedStorage::new(Box::new(backend));
         assert!(storage.may_omit_trials());
 
@@ -2328,8 +2360,9 @@ mod tests {
     }
 
     fn open_file_storage(path: &str, apply_discard: bool) -> Result<CachedStorage> {
-        let backend =
-            SQLite3Storage::new_with_option(path, SQLite3StorageOptions { apply_discard })?;
+        let backend = SQLite3Storage::builder(path)
+            .apply_discard(apply_discard)
+            .build()?;
         backend.create_database()?;
         backend.validate_discard_support()?;
         Ok(CachedStorage::new(Box::new(backend)))
