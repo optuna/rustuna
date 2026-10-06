@@ -6,7 +6,8 @@ use pyo3::PyResult;
 
 use rustuna_core::trial::PersistedTrial;
 use rustuna_importance::{
-    get_param_importances_with, ImportanceEvaluator, ImportanceOptions, PedAnovaImportanceEvaluator,
+    get_param_importances_with, ImportanceEvaluator, ImportanceOptions, PedAnovaBuilder,
+    PedAnovaImportanceEvaluator,
 };
 
 use crate::exception::err_to_exceptions;
@@ -56,9 +57,12 @@ impl PyPedAnovaImportanceEvaluator {
         region_quantile: f64,
         evaluate_on_local: bool,
     ) -> PyResult<Self> {
-        let evaluator =
-            PedAnovaImportanceEvaluator::new(target_quantile, region_quantile, evaluate_on_local)
-                .map_err(err_to_exceptions)?;
+        let evaluator = PedAnovaBuilder::new()
+            .target_quantile(target_quantile)
+            .region_quantile(region_quantile)
+            .evaluate_on_local(evaluate_on_local)
+            .build()
+            .map_err(err_to_exceptions)?;
         if region_quantile != 1.0 && !evaluate_on_local {
             PyErr::warn(
                 py,
