@@ -1,0 +1,16 @@
+# zizmor configuration (https://docs.zizmor.sh/configuration/).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Actions published by GitHub itself and by the vendors we already depend on may be
+        # referenced by tag; everything else has to be pinned to a commit hash.
+        actions/*: ref-pin
+        actions-rust-lang/*: ref-pin
+        astral-sh/*: ref-pin
+        "*": hash-pin
+  adhoc-packages:
+    ignore:
+      # `npm i -g biome` in the JS lint job. Pinning it would change what that check installs, so
+      # it is tracked separately from this audit.
+      - checks_js.yml
