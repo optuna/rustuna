@@ -237,6 +237,12 @@ impl ParzenEstimator {
     pub fn log_pdf_ordered(&self, values: &[f64]) -> f64 {
         self.mixuture_distribution.log_pdf_ordered(values)
     }
+
+    /// Scores categorical candidates in groups of four, in parameter-name order.
+    /// Models with numerical parameters use the ordinary per-candidate evaluation.
+    pub fn log_pdf_ordered_batch(&self, samples: &[Vec<f64>]) -> Vec<f64> {
+        self.mixuture_distribution.log_pdf_ordered_batch(samples)
+    }
 }
 
 pub(crate) trait NumericalDistributionBuilder {
@@ -489,6 +495,13 @@ mod tests {
         let samples = parzen_estimator.sample(&mut rng, 10);
         let mut ordered_rng = StdRng::seed_from_u64(42);
         let ordered = parzen_estimator.sample_ordered(&mut ordered_rng, 10);
+        assert_eq!(
+            parzen_estimator.log_pdf_ordered_batch(&ordered),
+            ordered
+                .iter()
+                .map(|s| parzen_estimator.log_pdf_ordered(s))
+                .collect::<Vec<_>>()
+        );
         let mut streamed_rng = StdRng::seed_from_u64(42);
         assert_eq!(ordered, streamed.sample_ordered(&mut streamed_rng, 10));
         assert_eq!(

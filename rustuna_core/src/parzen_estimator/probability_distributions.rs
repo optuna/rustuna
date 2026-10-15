@@ -487,6 +487,69 @@ impl MixtureOfProductDistribution {
         self.log_pdf_values(values.iter().copied().map(Some))
     }
 
+    pub fn log_pdf_ordered_batch(&self, samples: &[Vec<f64>]) -> Vec<f64> {
+        if self
+            .distributions
+            .iter()
+            .any(|d| !matches!(d, Distributions::Categorical(_)))
+        {
+            return samples.iter().map(|s| self.log_pdf_ordered(s)).collect();
+        }
+        let mut results = Vec::with_capacity(samples.len());
+        let mut scores = vec![[0.0; 4]; self.n_kernels];
+        for batch in samples.chunks(4) {
+            scores.fill([0.0; 4]);
+            let mut valid = [false; 4];
+            for (lane, sample) in batch.iter().enumerate() {
+                valid[lane] = sample.len() == self.distributions.len();
+            }
+            for (column, dist) in self.distributions.iter().enumerate() {
+                let Distributions::Categorical(d) = dist else {
+                    unreachable!()
+                };
+                let log_matching = d.matching.ln();
+                let log_other = d.other.ln();
+                let log_prior = (1.0 / d.cardinality as f64).ln();
+                let mut categories = [0; 4];
+                for (lane, sample) in batch.iter().enumerate() {
+                    if valid[lane] {
+                        categories[lane] = sample[column] as usize;
+                        valid[lane] = categories[lane] < d.cardinality;
+                    }
+                }
+                for (&observed, row) in d.observed_categories.iter().zip(scores.iter_mut()) {
+                    for (score, &category) in row.iter_mut().zip(&categories) {
+                        *score += if observed == category {
+                            log_matching
+                        } else {
+                            log_other
+                        };
+                    }
+                }
+                for score in scores.last_mut().unwrap() {
+                    *score += log_prior;
+                }
+            }
+            for (row, &weight) in scores.iter_mut().zip(&self.log_weights) {
+                for score in row {
+                    *score = if weight == f64::NEG_INFINITY {
+                        f64::NEG_INFINITY
+                    } else {
+                        *score + weight
+                    };
+                }
+            }
+            for (lane, &is_valid) in valid.iter().enumerate().take(batch.len()) {
+                results.push(if is_valid {
+                    self.normalize_log_pdf(scores.iter().map(|row| row[lane]))
+                } else {
+                    f64::NEG_INFINITY
+                });
+            }
+        }
+        results
+    }
+
     fn log_pdf_values(&self, values: impl Iterator<Item = Option<f64>>) -> f64 {
         let n = self.n_kernels;
         let mut weighted_log_pdf = vec![0.0_f64; n];
@@ -558,17 +621,17 @@ impl MixtureOfProductDistribution {
             }
         }
 
-        // Log-sum-exp across kernels
-        let max = weighted_log_pdf
-            .iter()
-            .cloned()
-            .fold(f64::NEG_INFINITY, f64::max);
+        self.normalize_log_pdf(weighted_log_pdf.iter().copied())
+    }
+
+    fn normalize_log_pdf(&self, scores: impl Iterator<Item = f64> + Clone) -> f64 {
+        let max = scores.clone().fold(f64::NEG_INFINITY, f64::max);
         if max.is_infinite() && max.is_sign_negative() {
             // All -inf -> return -inf
 
             return f64::NEG_INFINITY;
         }
-        let sum_exp: f64 = weighted_log_pdf.iter().map(|v| (v - max).exp()).sum();
+        let sum_exp: f64 = scores.map(|v| (v - max).exp()).sum();
         // Weights are basically normalized, but sum to 1 may not hold due to float rounding error
         (max + sum_exp.ln()) - self.log_sum_weights // Normalize by total weight to avoid float rounding error
     }
@@ -578,6 +641,40 @@ impl MixtureOfProductDistribution {
 mod tests {
     use super::*;
     use rand::SeedableRng;
+
+    #[test]
+    fn categorical_batches_match_scalar_scores_bit_for_bit() {
+        for n in [0, 1, 25, 100] {
+            let entries = (0..5)
+                .map(|column| {
+                    let d = CategoricalDistributions::new(
+                        (0..n).map(|row| ((row + column) % 8) as f64),
+                        8,
+                    );
+                    (format!("x{column}"), Distributions::Categorical(d))
+                })
+                .collect();
+            let mut weights = vec![1.0; n + 1];
+            if n > 0 {
+                weights[0] = 0.0;
+            }
+            let model = MixtureOfProductDistribution::new(entries, weights);
+            let mut rng = StdRng::seed_from_u64(7);
+            let mut samples = model.sample_ordered(&mut rng, 24);
+            samples.extend([vec![], vec![0.0; 6], vec![8.0; 5], vec![-1.0; 5]]);
+            for size in [0, 1, 3, 4, 5, 24, samples.len()] {
+                let actual = model.log_pdf_ordered_batch(&samples[..size]);
+                let expected: Vec<_> = samples[..size]
+                    .iter()
+                    .map(|s| model.log_pdf_ordered(s).to_bits())
+                    .collect();
+                assert_eq!(
+                    actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                    expected
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_mixture_of_product_distribution() {
