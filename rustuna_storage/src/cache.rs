@@ -79,9 +79,11 @@ pub trait CachedStorageBackend: Send + Sync {
     ) -> Result<()>;
     /// Whether reads from this backend omit discarded trials.
     ///
-    /// This mirrors `InMemoryStorageOptions::apply_discard` and
-    /// `JournalStorageOptions::apply_discard`: [`Self::discard_trials`] persists the discard
-    /// regardless of this flag, which only decides whether reads apply it.
+    /// This mirrors the `apply_discard` setting of the storage builders (e.g.
+    /// [`InMemoryStorageBuilder`](rustuna_core::storage::InMemoryStorageBuilder) and
+    /// [`JournalStorageBuilder`](crate::journal::storage::JournalStorageBuilder)):
+    /// [`Self::discard_trials`] persists the discard regardless of this flag, which only
+    /// decides whether reads apply it.
     fn apply_discard(&self) -> bool {
         false
     }

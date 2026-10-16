@@ -160,12 +160,6 @@ pub trait Storage: Send + Sync {
     fn may_omit_trials(&self) -> bool;
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-/// Options for [`InMemoryStorage`].
-pub struct InMemoryStorageOptions {
-    pub apply_discard: bool,
-}
-
 /// In-memory storage implementation used by default in Rust code and tests.
 ///
 /// This implementation keeps all studies, trials, and caches in process memory.
@@ -180,25 +174,45 @@ pub struct InMemoryStorage {
     // Supports the state-counting API required when `discard_trials` removes trials.
     // Storing only discarded trials' states avoids tracking state transitions and keeps this simple.
     discarded_state_counts: HashMap<(u32, TrialState), u32>,
-    option: InMemoryStorageOptions,
+    apply_discard: bool,
 }
-impl InMemoryStorage {
-    /// Creates an empty in-memory storage.
-    pub fn new() -> InMemoryStorage {
-        InMemoryStorage {
-            studies: vec![],
-            trials: HashMap::new(),
-            trial_id_number_map: TrialIdNumberHashMap::new(),
-            study_caches: HashMap::new(),
-            next_study_id: 0,
-            next_trial_id: 0,
-            discarded_state_counts: HashMap::new(),
-            option: InMemoryStorageOptions::default(),
+/// Builder for [`InMemoryStorage`], following the API style of [`std::thread::Builder`].
+///
+/// # Examples
+///
+/// ```
+/// use rustuna_core::storage::InMemoryStorage;
+///
+/// let storage = InMemoryStorage::builder().apply_discard(true).build();
+/// # let _ = storage;
+/// ```
+#[derive(Debug)]
+pub struct InMemoryStorageBuilder {
+    apply_discard: bool,
+}
+impl Default for InMemoryStorageBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl InMemoryStorageBuilder {
+    /// Creates a builder with the default configuration.
+    pub fn new() -> Self {
+        Self {
+            apply_discard: false,
         }
     }
 
-    /// Creates an empty in-memory storage.
-    pub fn new_with_option(option: InMemoryStorageOptions) -> InMemoryStorage {
+    /// Sets whether [`Storage::discard_trials`] removes trials from this storage.
+    ///
+    /// When this is `false`, discarding is a no-op. When this is `true`, discarded trials
+    /// are omitted from subsequent reads.
+    pub fn apply_discard(self, apply_discard: bool) -> Self {
+        Self { apply_discard }
+    }
+
+    /// Builds the storage.
+    pub fn build(self) -> InMemoryStorage {
         InMemoryStorage {
             studies: vec![],
             trials: HashMap::new(),
@@ -207,8 +221,32 @@ impl InMemoryStorage {
             next_study_id: 0,
             next_trial_id: 0,
             discarded_state_counts: HashMap::new(),
-            option,
+            apply_discard: self.apply_discard,
         }
+    }
+}
+
+impl InMemoryStorage {
+    /// Returns a builder for creating a storage with an explicit configuration.
+    ///
+    /// This is the counterpart of [`std::thread::Builder`]: settings are configured by
+    /// chaining methods and the storage is created with [`InMemoryStorageBuilder::build`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rustuna_core::storage::InMemoryStorage;
+    ///
+    /// let storage = InMemoryStorage::builder().apply_discard(true).build();
+    /// # let _ = storage;
+    /// ```
+    pub fn builder() -> InMemoryStorageBuilder {
+        InMemoryStorageBuilder::new()
+    }
+
+    /// Creates an empty in-memory storage.
+    pub fn new() -> InMemoryStorage {
+        Self::builder().build()
     }
 
     pub fn insert_study_with_id(
@@ -622,7 +660,7 @@ impl Storage for InMemoryStorage {
     }
 
     fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()> {
-        if !self.option.apply_discard {
+        if !self.apply_discard {
             return Ok(());
         }
         for trial_id in trial_ids {
@@ -647,7 +685,7 @@ impl Storage for InMemoryStorage {
     }
 
     fn may_omit_trials(&self) -> bool {
-        self.option.apply_discard
+        self.apply_discard
     }
 }
 
@@ -803,9 +841,7 @@ mod tests {
 
     #[test]
     fn delete_study_removes_discarded_trial_mappings() -> Result<()> {
-        let mut storage = InMemoryStorage::new_with_option(InMemoryStorageOptions {
-            apply_discard: true,
-        });
+        let mut storage = InMemoryStorage::builder().apply_discard(true).build();
         let study_id = storage
             .create_new_study("study", vec![Direction::Minimize])?
             .id;
@@ -910,9 +946,7 @@ mod tests {
 
     #[test]
     fn discard_trials_omits_trials() -> Result<()> {
-        let mut storage = InMemoryStorage::new_with_option(InMemoryStorageOptions {
-            apply_discard: true,
-        });
+        let mut storage = InMemoryStorage::builder().apply_discard(true).build();
         let study_id = storage
             .create_new_study("study", vec![Direction::Minimize])?
             .id;
@@ -933,9 +967,7 @@ mod tests {
 
     #[test]
     fn get_n_trials_counts_states() -> Result<()> {
-        let mut storage = InMemoryStorage::new_with_option(InMemoryStorageOptions {
-            apply_discard: true,
-        });
+        let mut storage = InMemoryStorage::builder().apply_discard(true).build();
         let study_id = storage
             .create_new_study("study", vec![Direction::Minimize])?
             .id;
