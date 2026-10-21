@@ -5,7 +5,7 @@ use pyo3::prelude::*;
 
 use rustuna_core::storage::Storage;
 use rustuna_storage::journal::file::JournalFileBackend;
-use rustuna_storage::journal::storage::{JournalStorage, JournalStorageOptions};
+use rustuna_storage::journal::storage::JournalStorage;
 
 use crate::distribution::PyDistribution;
 use crate::storage::binding::StorageBinding;
@@ -33,11 +33,12 @@ impl PyJournalFileStorage {
         let backend = JournalFileBackend::new(file_path, None).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to create journal file: {e:?}"))
         })?;
-        let storage = JournalStorage::new_with_options(
-            Box::new(backend),
-            JournalStorageOptions { apply_discard },
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to create journal storage: {e:?}")))?;
+        let storage = JournalStorage::builder(Box::new(backend))
+            .apply_discard(apply_discard)
+            .build()
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to create journal storage: {e:?}"))
+            })?;
         let binding = StorageBinding::new(Arc::new(RwLock::new(storage)));
         Ok(PyJournalFileStorage { binding })
     }
