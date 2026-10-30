@@ -44,8 +44,8 @@ impl Trial {
         sampler: Arc<dyn Sampler>,
         joint_params: HashMap<String, (Distribution, f64)>,
         fixed_params: HashMap<String, CategoryLabel>,
+        user_attrs: HashMap<String, String>,
     ) -> Self {
-        let cached_user_attrs = HashMap::new();
         Trial {
             id: trial_id,
             study_id,
@@ -57,7 +57,7 @@ impl Trial {
             sampler,
             joint_params,
             fixed_params,
-            cached_user_attrs,
+            cached_user_attrs: user_attrs,
         }
     }
 

@@ -154,7 +154,7 @@ impl Study {
             }
         };
 
-        let (trial_id, trial_number, datetime_start, datetime_complete, fixed_params) =
+        let (trial_id, trial_number, datetime_start, datetime_complete, fixed_params, user_attrs) =
             if let Some(trial_id) = queued_trial_id {
                 // Try to get trial from storage and transition to Running state.
                 // If any storage operation fails, enqueue the trial_id back to the queue.
@@ -171,6 +171,15 @@ impl Study {
                     let datetime_start = trial.datetime_start.clone();
                     let datetime_complete = trial.datetime_complete.clone();
                     let fixed_params = extract_fixed_params(&trial.attrs);
+                    // User attributes given by `enqueue_trial`.
+                    let user_attrs: HashMap<String, String> = trial
+                        .attrs
+                        .iter()
+                        .filter_map(|(key, value)| match key {
+                            AttrKey::User(k) => Some((k.as_str().to_string(), value.clone())),
+                            AttrKey::System(_) => None,
+                        })
+                        .collect();
 
                     guard.set_trial_state_values(trial_id, TrialStateValues::Running)?;
 
@@ -180,6 +189,7 @@ impl Study {
                         datetime_start,
                         datetime_complete,
                         fixed_params,
+                        user_attrs,
                     ))
                 })();
 
@@ -217,6 +227,7 @@ impl Study {
                     trial.number,
                     trial.datetime_start.clone(),
                     trial.datetime_complete.clone(),
+                    HashMap::new(),
                     HashMap::new(),
                 )
             };
@@ -269,6 +280,7 @@ impl Study {
             Arc::clone(&self.sampler),
             joint_params,
             fixed_params,
+            user_attrs,
         );
         Ok(trial)
     }
@@ -755,6 +767,25 @@ mod tests {
             .get_user_attr("key")
             .ok_or_else(|| Error::new(ErrorKind::StorageError))?;
         assert_eq!(user_attr, "bar");
+        Ok(())
+    }
+
+    #[test]
+    fn test_ask_returns_user_attrs_of_enqueued_trial() -> Result<()> {
+        let storage = InMemoryStorage::new();
+        let directions = vec![Direction::Minimize];
+        let study = create_study("dummy", storage, RandomSampler::new(), directions)?;
+
+        let mut user_attrs = Attrs::new();
+        user_attrs.insert(AttrKey::User("key".into()), String::from("bar"));
+        study.enqueue_trial(HashMap::new(), Some(user_attrs))?;
+
+        let mut trial = study.ask()?;
+        assert_eq!(trial.get_user_attr("key").map(String::as_str), Some("bar"));
+        assert_eq!(
+            trial.get_user_attrs(),
+            HashMap::from([(String::from("key"), String::from("bar"))])
+        );
         Ok(())
     }
 
