@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::attr::{
-    category_labels_to_attrs, json_to_plain, AttrFormat, AttrKey, Attrs, CategoryLabel,
+    category_labels_to_attrs, extract_fixed_params, json_to_plain, AttrFormat, AttrKey, Attrs,
+    CategoryLabel,
 };
 use crate::distribution::Distribution;
 use crate::sampler::{Context as SamplerContext, Sampler};
@@ -31,33 +32,35 @@ pub struct Trial {
     cached_user_attrs: HashMap<String, String>,
 }
 impl Trial {
-    /// Constructs a trial from storage and sampler state.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        trial_id: u32,
-        study_id: u32,
-        number: u32,
-        datetime_start: Option<String>,
-        datetime_complete: Option<String>,
+    /// Constructs a trial from persisted trial and sampler state.
+    pub(crate) fn new(
+        trial: PersistedTrial,
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
         sampler: Arc<dyn Sampler>,
         joint_params: HashMap<String, (Distribution, f64)>,
-        fixed_params: HashMap<String, CategoryLabel>,
-        user_attrs: HashMap<String, String>,
     ) -> Self {
+        let fixed_params = extract_fixed_params(&trial.attrs);
+        let cached_user_attrs = trial
+            .attrs
+            .into_iter()
+            .filter_map(|(key, value)| match key {
+                AttrKey::User(key) => Some((key.as_str().to_string(), value)),
+                AttrKey::System(_) => None,
+            })
+            .collect();
         Trial {
-            id: trial_id,
-            study_id,
-            number,
-            datetime_start,
-            datetime_complete,
+            id: trial.id,
+            study_id: trial.study_id,
+            number: trial.number,
+            datetime_start: trial.datetime_start,
+            datetime_complete: trial.datetime_complete,
             directions,
             storage,
             sampler,
             joint_params,
             fixed_params,
-            cached_user_attrs: user_attrs,
+            cached_user_attrs,
         }
     }
 
