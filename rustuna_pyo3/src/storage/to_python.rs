@@ -12,18 +12,18 @@ use crate::trial::{PyPersistedTrial, PyTrialState};
 #[derive(Clone)]
 #[pyclass(name = "ToPythonStorage", skip_from_py_object)]
 #[pyo3(module = "rustuna")]
-pub struct ToPythonStorage {
+pub(crate) struct ToPythonStorage {
     pub(crate) binding: StorageBinding,
 }
 
 impl ToPythonStorage {
-    pub fn new(storage: Arc<RwLock<dyn Storage>>) -> Self {
+    pub(crate) fn new(storage: Arc<RwLock<dyn Storage>>) -> Self {
         Self {
             binding: StorageBinding { storage },
         }
     }
 
-    pub fn storage(&self) -> Arc<RwLock<dyn Storage>> {
+    pub(crate) fn storage(&self) -> Arc<RwLock<dyn Storage>> {
         self.binding.storage.clone()
     }
 }

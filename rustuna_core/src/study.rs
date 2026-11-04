@@ -182,6 +182,7 @@ impl Study {
             trial_number: persisted_trial.number,
             trial_id: persisted_trial.id,
             directions: self.directions.clone(),
+            trial_queue: Arc::clone(&self.queue),
         };
         self.sampler.before_trial(&ctx, self.storage.clone())?;
 
@@ -219,6 +220,7 @@ impl Study {
             self.directions.clone(),
             Arc::clone(&self.storage),
             Arc::clone(&self.sampler),
+            Arc::clone(&self.queue),
             joint_params,
         );
         Ok(trial)
@@ -253,6 +255,7 @@ impl Study {
             directions: self.directions.clone(),
             trial_number,
             trial_id,
+            trial_queue: Arc::clone(&self.queue),
         };
         let after_trial_result =
             self.sampler
