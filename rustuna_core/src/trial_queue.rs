@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Mutex;
 
 use crate::{Error, ErrorKind, Result};
 
@@ -8,34 +9,36 @@ use crate::{Error, ErrorKind, Result};
 /// not pay coordination overhead on every trial creation.
 pub trait TrialQueue: Send + Sync {
     /// Pushes a trial ID into the queue.
-    fn enqueue(&mut self, trial_id: u32) -> Result<()>;
+    fn enqueue(&self, trial_id: u32) -> Result<()>;
     /// Pops the next queued trial ID.
-    fn dequeue(&mut self) -> Result<u32>;
+    fn dequeue(&self) -> Result<u32>;
 }
 
 /// In-memory queue implementation used by default.
 #[derive(Default)]
 pub struct InMemoryTrialQueue {
-    queue: VecDeque<u32>,
+    queue: Mutex<VecDeque<u32>>,
 }
 
 impl InMemoryTrialQueue {
     /// Creates an empty queue.
     pub fn new() -> Self {
         Self {
-            queue: VecDeque::new(),
+            queue: Mutex::new(VecDeque::new()),
         }
     }
 }
 
 impl TrialQueue for InMemoryTrialQueue {
-    fn enqueue(&mut self, trial_id: u32) -> Result<()> {
-        self.queue.push_back(trial_id);
+    fn enqueue(&self, trial_id: u32) -> Result<()> {
+        let mut guard = self.queue.lock().expect("queue guard poisoned");
+        guard.push_back(trial_id);
         Ok(())
     }
 
-    fn dequeue(&mut self) -> Result<u32> {
-        self.queue
+    fn dequeue(&self) -> Result<u32> {
+        let mut guard = self.queue.lock().expect("queue guard poisoned");
+        guard
             .pop_front()
             .ok_or_else(|| Error::new(ErrorKind::TrialQueueEmpty))
     }
@@ -47,7 +50,7 @@ mod tests {
 
     #[test]
     fn test_enqueue_and_dequeue() {
-        let mut queue = InMemoryTrialQueue::new();
+        let queue = InMemoryTrialQueue::new();
 
         assert!(queue.enqueue(1).is_ok());
         assert!(queue.enqueue(2).is_ok());
@@ -60,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_dequeue_empty_queue() {
-        let mut queue = InMemoryTrialQueue::new();
+        let queue = InMemoryTrialQueue::new();
         assert!(queue.dequeue().is_err());
     }
 }
