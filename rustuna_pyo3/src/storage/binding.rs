@@ -9,7 +9,7 @@ use rustuna_core::storage::Storage;
 use rustuna_core::study::{Direction, PersistedStudy};
 use rustuna_core::trial::{TrialState, TrialStateValues};
 
-use crate::attrs::{pyobj_to_attrs_with_kind, AttrKind};
+use crate::attrs::{decode_attr_value, pyobj_to_attrs_with_kind, AttrKind};
 use crate::distribution::{category_label_to_pyobject, pyobject_to_category_label, PyDistribution};
 use crate::exception::err_to_exceptions;
 use crate::study::{PyDirection, PyPersistedStudy};
@@ -311,15 +311,16 @@ impl StorageBinding {
         py: Python<'_>,
         study_id: u32,
         key: String,
-    ) -> PyResult<String> {
-        py.detach(|| {
+    ) -> PyResult<Py<PyAny>> {
+        let value = py.detach(|| {
             let mut guard = self.storage.write().map_err(|e| {
                 PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
             })?;
             guard
                 .get_study_attr(study_id, AttrKey::User(key.into()))
                 .map_err(err_to_exceptions)
-        })
+        })?;
+        decode_attr_value(py, &value)
     }
 
     pub(crate) fn get_study_system_attr(
@@ -327,15 +328,16 @@ impl StorageBinding {
         py: Python<'_>,
         study_id: u32,
         key: String,
-    ) -> PyResult<String> {
-        py.detach(|| {
+    ) -> PyResult<Py<PyAny>> {
+        let value = py.detach(|| {
             let mut guard = self.storage.write().map_err(|e| {
                 PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
             })?;
             guard
                 .get_study_attr(study_id, AttrKey::System(key.into()))
                 .map_err(err_to_exceptions)
-        })
+        })?;
+        decode_attr_value(py, &value)
     }
 
     pub(crate) fn get_trial_id_from_study_id_trial_number(

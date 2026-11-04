@@ -71,3 +71,8 @@ If you are interested in contributing, please take a look at [our contribution g
 ## License
 
 MIT License
+
+## Acknowledgement
+
+Rustuna is developed and maintained by [Preferred Networks](https://www.preferred.jp/en/)™
+(PFN™) and [community contributors](https://github.com/optuna/rustuna/graphs/contributors).

@@ -19,9 +19,9 @@ defaults:
 
 env:
   MATURIN_VERSION: v1.14.1
-  UV_VERSION: 0.12.1
+  UV_VERSION: 0.13.4
   UV_EXCLUDE_NEWER: 5 days
-  PIP_VERSION: 26.1.2
+  PIP_VERSION: 26.2.2
   TWINE_VERSION: 6.2.0
   ABI3AUDIT_VERSION: 0.0.26
   BUILD_ARGS: >-
@@ -45,7 +45,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.13"
@@ -112,7 +112,7 @@ jobs:
             done
             export PATH
       - name: Install uv and CPython ${{ matrix.python }}
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python }}
@@ -131,7 +131,7 @@ jobs:
           python -I -c 'import sys, sysconfig, rustuna; assert not sysconfig.get_config_var("Py_GIL_DISABLED") or not sys._is_gil_enabled(), "importing rustuna re-enabled the GIL"'
           python -I -c 'import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheel-${{ matrix.platform }}-${{ matrix.artifact_suffix }}
           path: dist/*.whl
@@ -189,7 +189,7 @@ jobs:
             /tmp/venv/bin/python -I -c "import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f\"{workdir.name}/rustuna.db\")"
           '
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheel-${{ matrix.platform }}-cp311-abi3
           path: dist/*.whl
@@ -243,7 +243,7 @@ jobs:
       # test use the same native interpreter on macOS and Windows, including ARM64.
       - name: Install CPython ${{ matrix.python }}
         id: setup-python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
           architecture: ${{ matrix.architecture }}
@@ -269,7 +269,7 @@ jobs:
           # GIL-enabled runtime. No-op on GIL-enabled builds, so the abi3 and abi3t legs share it.
           "$PYTHON_PATH" -I -c 'import sys, sysconfig, tempfile, rustuna; assert not sysconfig.get_config_var("Py_GIL_DISABLED") or not sys._is_gil_enabled(), "importing rustuna re-enabled the GIL"; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheel-${{ matrix.platform }}-${{ matrix.artifact_suffix }}
           path: dist/*.whl
@@ -301,12 +301,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheel-${{ matrix.platform }}-cp311-abi3
           path: dist
       - name: Install uv and CPython ${{ matrix.python }}
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           python-version: ${{ matrix.python }}
@@ -342,7 +342,7 @@ jobs:
         # crates and the workspace manifest actually made it into the archive.
         run: tar tzf dist/*.tar.gz
       - name: Install uv and CPython 3.13
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.13"
@@ -355,7 +355,7 @@ jobs:
           uv run --isolated --no-project --with dist/*.tar.gz \
             python -I -c 'import tempfile, rustuna; workdir = tempfile.TemporaryDirectory(); rustuna.storages.SQLite3Storage(f"{workdir.name}/rustuna.db")'
       - name: Upload source distribution
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -372,17 +372,17 @@ jobs:
       - build_sdist
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wheel-*
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sdist
           path: dist
       - name: Install uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           version: ${{ env.UV_VERSION }}
           python-version: "3.13"
@@ -401,15 +401,15 @@ jobs:
             exit 1
           fi
       - name: Check package metadata
-        run: uvx --from "twine==$TWINE_VERSION" twine check dist/*
+        run: uvx --exclude-newer-package certifi=false --from "twine==$TWINE_VERSION" twine check dist/*
       - name: Audit the abi3 wheels
         # Verify that the stable ABI wheels really only use the limited API. abi3audit does not
         # know the `abi3t` tag yet, so only the cp311-abi3 wheels are checked.
         run: >-
-          uvx --from "abi3audit==$ABI3AUDIT_VERSION"
+          uvx --exclude-newer-package certifi=false --from "abi3audit==$ABI3AUDIT_VERSION"
           abi3audit --strict --verbose dist/*-cp311-abi3-*.whl
       - name: Upload verified distributions
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: python-distributions
           path: dist/*
@@ -437,12 +437,12 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: python-distributions
           path: dist
       - name: Publish distributions
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           skip-existing: true
           verbose: true

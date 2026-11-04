@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::attr::{extract_fixed_params, fixed_params_to_attrs, AttrKey, Attrs, CategoryLabel};
+use crate::attr::{fixed_params_to_attrs, AttrKey, Attrs, CategoryLabel};
 use crate::distribution::Distribution;
 use crate::sampler::{Context as SamplerContext, Sampler};
 use crate::storage::Storage;
@@ -19,7 +19,7 @@ pub fn create_study<S: Storage + Send + Sync + 'static, T: Sampler + 'static>(
     let study_id = storage.create_new_study(study_name, directions.clone())?.id;
     let storage = Arc::new(RwLock::new(storage));
     let sampler: Arc<dyn Sampler> = Arc::new(sampler);
-    let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+    let queue = Arc::new(InMemoryTrialQueue::new());
     Ok(Study::new(
         study_id,
         study_name.to_string(),
@@ -45,7 +45,7 @@ pub fn create_study_with_arc(
     })?;
     let study_id = guard.create_new_study(study_name, directions.clone())?.id;
     drop(guard);
-    let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+    let queue = Arc::new(InMemoryTrialQueue::new());
     Ok(Study::new(
         study_id,
         study_name.to_string(),
@@ -70,7 +70,7 @@ pub struct Study {
     pub directions: Vec<Direction>,
     pub storage: Arc<RwLock<dyn Storage>>,
     pub sampler: Arc<dyn Sampler>,
-    pub queue: Arc<RwLock<dyn TrialQueue>>,
+    pub queue: Arc<dyn TrialQueue>,
 }
 impl Study {
     /// Constructs a study from fully initialized components.
@@ -80,7 +80,7 @@ impl Study {
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
         sampler: Arc<dyn Sampler>,
-        queue: Arc<RwLock<dyn TrialQueue>>,
+        queue: Arc<dyn TrialQueue>,
     ) -> Self {
         Study {
             id,
@@ -108,7 +108,7 @@ impl Study {
         let name = study.name.clone();
         let directions = study.directions.clone();
         drop(guard);
-        let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+        let queue = Arc::new(InMemoryTrialQueue::new());
         Ok(Study::new(id, name, directions, storage, sampler, queue))
     }
 
@@ -132,7 +132,7 @@ impl Study {
         let study_id = study.id;
         let directions = study.directions.clone();
         drop(guard);
-        let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+        let queue = Arc::new(InMemoryTrialQueue::new());
         Ok(Study::new(
             study_id, name, directions, storage, sampler, queue,
         ))
@@ -141,90 +141,46 @@ impl Study {
     /// Creates or dequeues the next trial to evaluate.
     pub fn ask(&self) -> Result<Trial> {
         let queued_trial_id = {
-            let mut queue_guard = self.queue.write().map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::Unexpected,
-                    format!("Failed to acquire a queue guard: {e}"),
-                )
-            })?;
-            match queue_guard.dequeue() {
+            match self.queue.dequeue() {
                 Ok(trial_id) => Some(trial_id),
                 Err(error) if matches!(error.kind, ErrorKind::TrialQueueEmpty) => None,
                 Err(error) => return Err(error),
             }
         };
 
-        let (trial_id, trial_number, datetime_start, datetime_complete, fixed_params) =
-            if let Some(trial_id) = queued_trial_id {
-                // Try to get trial from storage and transition to Running state.
-                // If any storage operation fails, enqueue the trial_id back to the queue.
-                let result = (|| {
-                    let mut guard = self.storage.write().map_err(|e| {
-                        Error::with_reason(
-                            ErrorKind::Unexpected,
-                            format!("Failed to acquire a storage guard: {e}"),
-                        )
-                    })?;
-                    let trial = guard.get_trial(trial_id)?;
-
-                    let trial_number = trial.number;
-                    let datetime_start = trial.datetime_start.clone();
-                    let datetime_complete = trial.datetime_complete.clone();
-                    let fixed_params = extract_fixed_params(&trial.attrs);
-
-                    guard.set_trial_state_values(trial_id, TrialStateValues::Running)?;
-
-                    Ok((
-                        trial_id,
-                        trial_number,
-                        datetime_start,
-                        datetime_complete,
-                        fixed_params,
-                    ))
-                })();
-
-                match result {
-                    Ok(values) => values,
-                    Err(e) => {
-                        // Push the trial_id back to the queue on storage error
-                        let mut queue_guard = self.queue.write().map_err(|queue_err| {
-                            Error::with_reason(
-                                ErrorKind::Unexpected,
-                                format!("Failed to acquire queue guard for recovery: {queue_err}"),
-                            )
-                        })?;
-                        if let Err(queue_err) = queue_guard.enqueue(trial_id) {
-                            return Err(Error::with_reason(
+        let persisted_trial = if let Some(trial_id) = queued_trial_id {
+            // Try to get trial from storage and transition to Running state.
+            // If any storage operation fails, enqueue the trial_id back to the queue.
+            let result = (|| {
+                let mut guard = self.storage.write().expect("storage lock poisoned");
+                let trial = guard.get_trial(trial_id)?.clone();
+                guard.set_trial_state_values(trial_id, TrialStateValues::Running)?;
+                Ok(trial)
+            })();
+            match result {
+                Ok(trial) => trial,
+                Err(e) => {
+                    // Push the trial_id back to the queue on storage error
+                    if let Err(queue_err) = self.queue.enqueue(trial_id) {
+                        return Err(Error::with_reason(
                                 ErrorKind::Unexpected,
                                 format!(
                                     "Failed to restore queued trial {trial_id} after ask error: {queue_err}; original error: {e}"
                                 ),
                             ));
-                        }
-                        return Err(e);
                     }
+                    return Err(e);
                 }
-            } else {
-                let mut guard = self.storage.write().map_err(|e| {
-                    Error::with_reason(
-                        ErrorKind::Unexpected,
-                        format!("Failed to acquire a storage guard: {e}"),
-                    )
-                })?;
-                let trial = guard.create_new_trial(self.id)?;
-                (
-                    trial.id,
-                    trial.number,
-                    trial.datetime_start.clone(),
-                    trial.datetime_complete.clone(),
-                    HashMap::new(),
-                )
-            };
+            }
+        } else {
+            let mut guard = self.storage.write().expect("storage lock poisoned");
+            guard.create_new_trial(self.id)?.clone()
+        };
 
         let ctx = SamplerContext {
             study_id: self.id,
-            trial_number,
-            trial_id,
+            trial_number: persisted_trial.number,
+            trial_id: persisted_trial.id,
             directions: self.directions.clone(),
         };
         self.sampler.before_trial(&ctx, self.storage.clone())?;
@@ -259,16 +215,11 @@ impl Study {
             };
 
         let trial = Trial::new(
-            trial_id,
-            self.id,
-            trial_number,
-            datetime_start,
-            datetime_complete,
+            persisted_trial,
             self.directions.clone(),
             Arc::clone(&self.storage),
             Arc::clone(&self.sampler),
             joint_params,
-            fixed_params,
         );
         Ok(trial)
     }
@@ -439,7 +390,7 @@ impl Study {
         })?;
         let mut template = PersistedTrial::new(0, self.id, 0);
         template.state_values = TrialStateValues::Waiting;
-        let fixed_attrs = fixed_params_to_attrs(&params);
+        let fixed_attrs = fixed_params_to_attrs(&params, guard.attr_format());
         template.attrs.extend(fixed_attrs);
 
         if let Some(attrs) = user_attrs {
@@ -450,14 +401,7 @@ impl Study {
         let trial_id = trial.id;
         drop(guard);
 
-        let mut queue_guard = self.queue.write().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::Unexpected,
-                format!("Failed to acquire a queue guard: {e}"),
-            )
-        })?;
-        queue_guard.enqueue(trial_id)?;
-
+        self.queue.enqueue(trial_id)?;
         Ok(())
     }
 }
@@ -755,6 +699,25 @@ mod tests {
             .get_user_attr("key")
             .ok_or_else(|| Error::new(ErrorKind::StorageError))?;
         assert_eq!(user_attr, "bar");
+        Ok(())
+    }
+
+    #[test]
+    fn test_ask_returns_user_attrs_of_enqueued_trial() -> Result<()> {
+        let storage = InMemoryStorage::new();
+        let directions = vec![Direction::Minimize];
+        let study = create_study("dummy", storage, RandomSampler::new(), directions)?;
+
+        let mut user_attrs = Attrs::new();
+        user_attrs.insert(AttrKey::User("key".into()), String::from("bar"));
+        study.enqueue_trial(HashMap::new(), Some(user_attrs))?;
+
+        let mut trial = study.ask()?;
+        assert_eq!(trial.get_user_attr("key").map(String::as_str), Some("bar"));
+        assert_eq!(
+            trial.get_user_attrs(),
+            HashMap::from([(String::from("key"), String::from("bar"))])
+        );
         Ok(())
     }
 

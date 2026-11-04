@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from rustuna import CategoricalChoiceType
@@ -257,7 +257,7 @@ class StorageProtocol(Protocol):
             Number of the trial within its study.
         """
 
-    def get_study_user_attr(self, study_id: int, key: str) -> str:
+    def get_study_user_attr(self, study_id: int, key: str) -> Any:
         """Get a single user attribute of a study.
 
         Args:
@@ -265,10 +265,10 @@ class StorageProtocol(Protocol):
             key: Attribute key.
 
         Returns:
-            The attribute value as a string.
+            The attribute value.
         """
 
-    def get_study_system_attr(self, study_id: int, key: str) -> str:
+    def get_study_system_attr(self, study_id: int, key: str) -> Any:
         """Get a single system attribute of a study.
 
         Args:
@@ -276,7 +276,7 @@ class StorageProtocol(Protocol):
             key: Attribute key.
 
         Returns:
-            The attribute value as a string.
+            The attribute value.
         """
 
     def get_trial_id_from_study_id_trial_number(
@@ -292,7 +292,7 @@ class StorageProtocol(Protocol):
             ID of the trial.
         """
 
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None:
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None:
         """Set system attributes of a study.
 
         Args:
@@ -300,7 +300,7 @@ class StorageProtocol(Protocol):
             attrs: System attributes to set.
         """
 
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None:
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None:
         """Set user attributes of a study.
 
         Args:
@@ -308,7 +308,7 @@ class StorageProtocol(Protocol):
             attrs: User attributes to set.
         """
 
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None:
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None:
         """Set system attributes of a trial.
 
         Args:
@@ -316,7 +316,7 @@ class StorageProtocol(Protocol):
             attrs: System attributes to set.
         """
 
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None:
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None:
         """Set user attributes of a trial.
 
         Args:
@@ -426,22 +426,22 @@ class CachedStorageBackend(Protocol):
     ) -> int:
         """Return the number of persisted trials."""
 
-    def get_study_user_attr(self, study_id: int, key: str) -> str:
+    def get_study_user_attr(self, study_id: int, key: str) -> Any:
         """Return a study user attribute."""
 
-    def get_study_system_attr(self, study_id: int, key: str) -> str:
+    def get_study_system_attr(self, study_id: int, key: str) -> Any:
         """Return a study system attribute."""
 
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None:
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None:
         """Persist study system attributes."""
 
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None:
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None:
         """Persist study user attributes."""
 
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None:
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None:
         """Persist trial system attributes."""
 
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None:
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None:
         """Persist trial user attributes."""
 
     def set_trial_intermediate_value(

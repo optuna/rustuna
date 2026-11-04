@@ -258,7 +258,58 @@ impl DiscreteTruncLogNormDistributions {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CategoricalDistributions {
-    pub weights: Vec<Vec<f64>>,
+    // Each observation contributes a uniform mass plus a spike at its category.
+    // The final kernel is the uniform prior. Joint mixtures retain row identity.
+    observed_categories: Vec<usize>,
+    cardinality: usize,
+    matching: f64,
+    other: f64,
+}
+
+impl CategoricalDistributions {
+    pub(crate) fn new(observations: impl IntoIterator<Item = f64>, cardinality: usize) -> Self {
+        assert!(cardinality > 0, "Categorical cardinality must be positive");
+        let observations = observations.into_iter();
+        let (lower, upper) = observations.size_hint();
+        let mut observed_categories = Vec::with_capacity(upper.unwrap_or(lower));
+        for value in observations {
+            let category = value as usize;
+            assert!(category < cardinality, "Observed category is out of range");
+            observed_categories.push(category);
+        }
+        let prior_mass = 1.0 / (observed_categories.len() + 1) as f64;
+        let denominator = 1.0 + cardinality as f64 * prior_mass;
+        let matching = (1.0 + prior_mass) / denominator;
+        let other = prior_mass / denominator;
+        Self {
+            observed_categories,
+            cardinality,
+            matching,
+            other,
+        }
+    }
+
+    fn probability(&self, kernel: usize, category: usize) -> f64 {
+        match self.observed_categories.get(kernel) {
+            Some(&observed) if observed == category => self.matching,
+            Some(_) => self.other,
+            None => 1.0 / self.cardinality as f64,
+        }
+    }
+
+    fn accumulate_log_pdf(&self, category: usize, scores: &mut [f64]) {
+        debug_assert_eq!(scores.len(), self.observed_categories.len() + 1);
+        let log_matching = self.matching.ln();
+        let log_other = self.other.ln();
+        for (&observed, score) in self.observed_categories.iter().zip(scores.iter_mut()) {
+            *score += if observed == category {
+                log_matching
+            } else {
+                log_other
+            };
+        }
+        *scores.last_mut().unwrap() += (1.0 / self.cardinality as f64).ln();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +319,18 @@ pub(crate) enum Distributions {
     DiscreteTruncNorm(DiscreteTruncNormDistributions),
     DiscreteTruncLogNorm(DiscreteTruncLogNormDistributions),
     Categorical(CategoricalDistributions),
+}
+
+impl Distributions {
+    pub(crate) fn n_kernels(&self) -> usize {
+        match self {
+            Self::TruncNorm(d) => d.mus.len(),
+            Self::TruncLogNorm(d) => d.mus.len(),
+            Self::DiscreteTruncNorm(d) => d.mus.len(),
+            Self::DiscreteTruncLogNorm(d) => d.mus.len(),
+            Self::Categorical(d) => d.observed_categories.len() + 1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -281,7 +344,7 @@ pub(crate) struct MixtureOfProductDistribution {
 }
 
 impl MixtureOfProductDistribution {
-    pub fn new(distributions_map: HashMap<String, Distributions>, weights: Vec<f64>) -> Self {
+    pub fn new(entries: Vec<(String, Distributions)>, weights: Vec<f64>) -> Self {
         let sum_w = weights.iter().sum::<f64>();
         let log_sum_weights = if sum_w > 0.0 {
             sum_w.ln()
@@ -297,8 +360,6 @@ impl MixtureOfProductDistribution {
         let alias =
             WeightedAliasIndex::new(weights).expect("weights must be non-empty and non-negative");
 
-        let mut entries: Vec<_> = distributions_map.into_iter().collect();
-        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         let (param_names, distributions) = entries.into_iter().unzip();
 
         MixtureOfProductDistribution {
@@ -312,11 +373,18 @@ impl MixtureOfProductDistribution {
     }
 
     pub fn sample(&self, rng: &mut StdRng, size: usize) -> Vec<HashMap<String, f64>> {
-        let mut samples: Vec<HashMap<String, f64>> = Vec::with_capacity(size);
+        self.sample_ordered(rng, size)
+            .into_iter()
+            .map(|values| self.param_names.iter().cloned().zip(values).collect())
+            .collect()
+    }
+
+    pub fn sample_ordered(&self, rng: &mut StdRng, size: usize) -> Vec<Vec<f64>> {
+        let mut samples: Vec<Vec<f64>> = Vec::with_capacity(size);
 
         for _ in 0..size {
             let k = self.alias.sample(rng); // Active kernel index
-            let mut sample = HashMap::with_capacity(self.param_names.len());
+            let mut sample = Vec::with_capacity(self.param_names.len());
             for (param, dist) in self.param_names.iter().zip(self.distributions.iter()) {
                 match dist {
                     Distributions::TruncNorm(d) => {
@@ -330,7 +398,7 @@ impl MixtureOfProductDistribution {
                             sigma,
                         )
                         .unwrap();
-                        sample.insert(param.clone(), value);
+                        sample.push(value);
                     }
                     Distributions::TruncLogNorm(d) => {
                         let mu = d.mus[k];
@@ -343,7 +411,7 @@ impl MixtureOfProductDistribution {
                             sigma,
                         )
                         .unwrap();
-                        sample.insert(param.clone(), log_value.exp());
+                        sample.push(log_value.exp());
                     }
                     Distributions::DiscreteTruncNorm(d) => {
                         let mu = d.mus[k];
@@ -359,7 +427,7 @@ impl MixtureOfProductDistribution {
                         let discrete_value = (d.low + ((value - d.low) / d.step).round() * d.step)
                             .max(d.low)
                             .min(d.high);
-                        sample.insert(param.clone(), discrete_value);
+                        sample.push(discrete_value);
                     }
                     Distributions::DiscreteTruncLogNorm(d) => {
                         let mu = d.mus[k];
@@ -377,24 +445,28 @@ impl MixtureOfProductDistribution {
                             + ((original - d.low) / d.step).round() * d.step)
                             .max(d.low)
                             .min(d.high);
-                        sample.insert(param.clone(), discrete_value);
+                        sample.push(discrete_value);
                     }
                     Distributions::Categorical(d) => {
-                        let probs = &d.weights[k];
-                        let sum: f64 = probs.iter().sum();
-                        assert!(sum > 0.0, "Categorical distribution has non-positive total probability for param {param}");
+                        let sum: f64 = (0..d.cardinality)
+                            .map(|category| d.probability(k, category))
+                            .sum();
+                        assert!(
+                            sum > 0.0,
+                            "Categorical distribution has non-positive total probability for param {param}"
+                        );
 
                         let u = rng.gen::<f64>() * sum;
                         let mut cum = 0.0;
-                        let mut chosen = (probs.len() - 1) as f64; // fallback
-                        for (category, &p) in probs.iter().enumerate() {
-                            cum += p;
+                        let mut chosen = (d.cardinality - 1) as f64; // fallback
+                        for category in 0..d.cardinality {
+                            cum += d.probability(k, category);
                             if u <= cum {
                                 chosen = category as f64;
                                 break;
                             }
                         }
-                        sample.insert(param.clone(), chosen);
+                        sample.push(chosen);
                     }
                 }
             }
@@ -405,15 +477,23 @@ impl MixtureOfProductDistribution {
     }
 
     pub fn log_pdf(&self, x: &HashMap<String, f64>) -> f64 {
+        self.log_pdf_values(self.param_names.iter().map(|name| x.get(name).copied()))
+    }
+
+    pub fn log_pdf_ordered(&self, values: &[f64]) -> f64 {
+        if values.len() != self.distributions.len() {
+            return f64::NEG_INFINITY;
+        }
+        self.log_pdf_values(values.iter().copied().map(Some))
+    }
+
+    fn log_pdf_values(&self, values: impl Iterator<Item = Option<f64>>) -> f64 {
         let n = self.n_kernels;
         let mut weighted_log_pdf = vec![0.0_f64; n];
 
-        for (param, dist) in self.param_names.iter().zip(self.distributions.iter()) {
-            let x_val = match x.get(param) {
-                Some(v) => *v,
-                None => {
-                    return f64::NEG_INFINITY;
-                }
+        for (dist, value) in self.distributions.iter().zip(values) {
+            let Some(x_val) = value else {
+                return f64::NEG_INFINITY;
             };
 
             match dist {
@@ -460,20 +540,10 @@ impl MixtureOfProductDistribution {
                 }
                 Distributions::Categorical(d) => {
                     let xi = x_val as usize;
-                    for (k, weight) in weighted_log_pdf.iter_mut().enumerate().take(n) {
-                        if *weight == f64::NEG_INFINITY {
-                            continue;
-                        }
-                        if xi >= d.weights[k].len() {
-                            return f64::NEG_INFINITY;
-                        }
-                        let p = d.weights[k][xi];
-                        if p <= 0.0 {
-                            *weight = f64::NEG_INFINITY;
-                        } else {
-                            *weight += p.ln();
-                        }
+                    if xi >= d.cardinality {
+                        return f64::NEG_INFINITY;
                     }
+                    d.accumulate_log_pdf(xi, &mut weighted_log_pdf);
                 }
             }
         }
@@ -537,13 +607,8 @@ mod tests {
             5.0,
             1.0,
         );
-        let categorical_dist = CategoricalDistributions {
-            weights: vec![
-                vec![0.9, 0.1], // vec.len() == cardinality
-                vec![0.5, 0.5], // uniform prior
-            ], // weigths.len() == mus.len()
-        };
-        let distributions = vec![
+        let categorical_dist = CategoricalDistributions::new([0.0], 2);
+        let mut distributions = vec![
             (
                 "param_truncnorm".to_string(),
                 Distributions::TruncNorm(truncnorm_dist),
@@ -565,10 +630,9 @@ mod tests {
                 Distributions::Categorical(categorical_dist),
             ),
         ];
-        let distributions_map: std::collections::HashMap<String, Distributions> =
-            distributions.into_iter().collect();
+        distributions.sort_by(|a, b| a.0.cmp(&b.0));
         let mixture = MixtureOfProductDistribution::new(
-            distributions_map,
+            distributions,
             vec![0.5, 0.5], // weights.len() == mus.len()
         );
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
@@ -585,5 +649,79 @@ mod tests {
             let val_categorical = sample.get("param_categorical").unwrap();
             assert!(*val_categorical == 0.0 || *val_categorical == 1.0);
         }
+    }
+
+    #[test]
+    fn categorical_kernels_keep_smoothed_probabilities_and_uniform_prior() {
+        let distribution = CategoricalDistributions::new([1.0, 2.0], 3);
+        let expected = [
+            [1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0],
+            [1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0],
+            [1.0 / 3.0; 3],
+        ];
+        for (category, _) in expected[0].iter().enumerate() {
+            let mut scores = vec![0.0; 3];
+            distribution.accumulate_log_pdf(category, &mut scores);
+            for (kernel, (row, score)) in expected.iter().zip(scores).enumerate() {
+                assert!((distribution.probability(kernel, category) - row[category]).abs() < 1e-15);
+                assert!((score - row[category].ln()).abs() < 1e-15);
+            }
+        }
+        for cardinality in [1, 3, 257] {
+            let prior = CategoricalDistributions::new([], cardinality);
+            let singleton = CategoricalDistributions::new([0.0; 10], 1);
+            let mut scores = vec![0.0; 1];
+            prior.accumulate_log_pdf(0, &mut scores);
+            assert_eq!(prior.probability(0, 0), 1.0 / cardinality as f64);
+            assert_eq!(scores[0], (1.0 / cardinality as f64).ln());
+            assert_eq!(singleton.probability(0, 0), 1.0);
+        }
+    }
+
+    #[test]
+    fn categorical_joint_density_keeps_observation_correlations_and_weights() {
+        let mixture = MixtureOfProductDistribution::new(
+            vec![
+                (
+                    "x".into(),
+                    Distributions::Categorical(CategoricalDistributions::new([0.0, 1.0], 2)),
+                ),
+                (
+                    "y".into(),
+                    Distributions::Categorical(CategoricalDistributions::new([0.0, 1.0], 2)),
+                ),
+            ],
+            vec![1.0, 2.0, 0.5],
+        );
+        let matching = 4.0_f64 / 5.0;
+        let other = 1.0_f64 / 5.0;
+        for (x, y) in [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)] {
+            let likelihood = (if x == 0.0 { matching } else { other })
+                * (if y == 0.0 { matching } else { other })
+                + 2.0
+                    * (if x == 1.0 { matching } else { other })
+                    * (if y == 1.0 { matching } else { other })
+                + 0.5 * 0.25;
+            let actual = mixture.log_pdf(&HashMap::from([("x".into(), x), ("y".into(), y)]));
+            assert!((actual - (likelihood / 3.5).ln()).abs() < 1e-14);
+        }
+        assert_eq!(
+            mixture.log_pdf(&HashMap::from([("x".into(), 2.0), ("y".into(), 0.0)])),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(
+            mixture.log_pdf(&HashMap::from([("x".into(), 0.0)])),
+            f64::NEG_INFINITY
+        );
+        let mut rng = StdRng::seed_from_u64(42);
+        let samples = mixture.sample(&mut rng, 20_000);
+        let equal = samples
+            .iter()
+            .filter(|sample| sample["x"] == sample["y"])
+            .count() as f64
+            / samples.len() as f64;
+        // Both observed kernels give P(x=y)=0.8^2+0.2^2; the prior gives 0.5.
+        let expected_equal = (3.0 * (matching * matching + other * other) + 0.5 * 0.5) / 3.5;
+        assert!((equal - expected_equal).abs() < 0.015);
     }
 }

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use rand::prelude::*;
 use rand::rngs::StdRng;
-use rustuna_core::attr::{AttrKey, Attrs};
+use rustuna_core::attr::{json_to_plain, AttrKey, Attrs};
 use rustuna_core::distribution::Distribution;
 use rustuna_core::sampler::{Context, Sampler};
 use rustuna_core::storage::Storage;
@@ -35,14 +35,14 @@ const PARENT_CACHE_KEY_PREFIX: &str = "NSGAIISampler:parent:";
 /// use rustuna_core::storage::InMemoryStorage;
 /// use rustuna_core::study::{create_study, Direction};
 /// use rustuna_core::Result;
-/// use rustuna_sampler::nsgaii::NSGAIISampler;
+/// use rustuna_sampler::nsgaii::NsgaiiSampler;
 ///
 /// fn main() -> Result<()> {
 ///     let storage = InMemoryStorage::new();
 ///     let study = create_study(
 ///         "bi-objective",
 ///         storage,
-///         NSGAIISampler::new(50, None, 0.9, 0.5),
+///         NsgaiiSampler::new(50, None, 0.9, 0.5),
 ///         vec![Direction::Minimize, Direction::Maximize],
 ///     )?;
 ///
@@ -57,7 +57,7 @@ const PARENT_CACHE_KEY_PREFIX: &str = "NSGAIISampler:parent:";
 ///     Ok(())
 /// }
 /// ```
-pub struct NSGAIISampler {
+pub struct NsgaiiSampler {
     rng: Mutex<StdRng>,
     population_size: usize,
     mutation_prob: Option<f64>,
@@ -67,13 +67,105 @@ pub struct NSGAIISampler {
     /// Updated incrementally in `after_trial` so `sample_joint` does not scan all trials every time.
     generation_to_numbers: RwLock<HashMap<u32, Vec<u32>>>,
 }
-impl Default for NSGAIISampler {
+impl Default for NsgaiiSampler {
     fn default() -> Self {
         Self::new(50, None, 0.9, 0.5)
     }
 }
 
-impl NSGAIISampler {
+/// Builder for [`NsgaiiSampler`], following the API style of [`std::thread::Builder`].
+///
+/// # Examples
+///
+/// ```
+/// use rustuna_sampler::nsgaii::NsgaiiBuilder;
+///
+/// let sampler = NsgaiiBuilder::new()
+///     .population_size(100)
+///     .mutation_prob(0.1)
+///     .crossover_prob(0.9)
+///     .swapping_prob(0.5)
+///     .seed(42)
+///     .build();
+/// ```
+pub struct NsgaiiBuilder {
+    population_size: usize,
+    mutation_prob: Option<f64>,
+    crossover_prob: f64,
+    swapping_prob: f64,
+    seed: Option<u64>,
+}
+impl Default for NsgaiiBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl NsgaiiBuilder {
+    /// Creates a builder with the default configuration.
+    pub fn new() -> Self {
+        Self {
+            population_size: 50,
+            mutation_prob: None,
+            crossover_prob: 0.9,
+            swapping_prob: 0.5,
+            seed: None,
+        }
+    }
+
+    pub fn population_size(self, population_size: usize) -> Self {
+        Self {
+            population_size,
+            ..self
+        }
+    }
+
+    /// Sets the per-parameter mutation probability. When unset, the automatic default
+    /// `1 / n_params` is used.
+    pub fn mutation_prob(self, mutation_prob: f64) -> Self {
+        Self {
+            mutation_prob: Some(mutation_prob),
+            ..self
+        }
+    }
+
+    pub fn crossover_prob(self, crossover_prob: f64) -> Self {
+        Self {
+            crossover_prob,
+            ..self
+        }
+    }
+
+    pub fn swapping_prob(self, swapping_prob: f64) -> Self {
+        Self {
+            swapping_prob,
+            ..self
+        }
+    }
+
+    pub fn seed(self, seed: u64) -> Self {
+        Self {
+            seed: Some(seed),
+            ..self
+        }
+    }
+
+    pub fn build(self) -> NsgaiiSampler {
+        let rng = match self.seed {
+            Some(seed) => StdRng::seed_from_u64(seed),
+            None => StdRng::from_seed(Default::default()),
+        };
+        NsgaiiSampler {
+            rng: Mutex::new(rng),
+            population_size: self.population_size,
+            mutation_prob: self.mutation_prob,
+            crossover_prob: self.crossover_prob,
+            swapping_prob: self.swapping_prob,
+            generation_to_numbers: RwLock::new(HashMap::new()),
+        }
+    }
+}
+
+impl NsgaiiSampler {
     /// Creates an NSGA-II sampler.
     ///
     /// `population_size` is the number of individuals retained in each generation.
@@ -86,19 +178,19 @@ impl NSGAIISampler {
         mutation_prob: Option<f64>,
         crossover_prob: f64,
         swapping_prob: f64,
-    ) -> NSGAIISampler {
-        NSGAIISampler {
-            rng: Mutex::new(StdRng::from_seed(Default::default())),
-            population_size,
-            mutation_prob,
-            crossover_prob,
-            swapping_prob,
-            generation_to_numbers: RwLock::new(HashMap::new()),
+    ) -> NsgaiiSampler {
+        let mut builder = NsgaiiBuilder::new()
+            .population_size(population_size)
+            .crossover_prob(crossover_prob)
+            .swapping_prob(swapping_prob);
+        if let Some(mutation_prob) = mutation_prob {
+            builder = builder.mutation_prob(mutation_prob);
         }
+        builder.build()
     }
     /// Creates a reproducibly seeded NSGA-II sampler.
     ///
-    /// This is equivalent to [`NSGAIISampler::new`] but initializes the internal random number
+    /// This is equivalent to [`NsgaiiSampler::new`] but initializes the internal random number
     /// generator from the provided seed.
     pub fn seed_from_u64(
         seed: u64,
@@ -106,15 +198,16 @@ impl NSGAIISampler {
         mutation_prob: Option<f64>,
         crossover_prob: f64,
         swapping_prob: f64,
-    ) -> NSGAIISampler {
-        NSGAIISampler {
-            rng: Mutex::new(StdRng::seed_from_u64(seed)),
-            population_size,
-            mutation_prob,
-            crossover_prob,
-            swapping_prob,
-            generation_to_numbers: RwLock::new(HashMap::new()),
+    ) -> NsgaiiSampler {
+        let mut builder = NsgaiiBuilder::new()
+            .population_size(population_size)
+            .crossover_prob(crossover_prob)
+            .swapping_prob(swapping_prob)
+            .seed(seed);
+        if let Some(mutation_prob) = mutation_prob {
+            builder = builder.mutation_prob(mutation_prob);
         }
+        builder.build()
     }
     fn get_rng_lock(&self) -> Result<MutexGuard<'_, StdRng>> {
         self.rng.lock().map_err(|e| {
@@ -133,7 +226,7 @@ impl NSGAIISampler {
                 continue;
             }
             if let Some(gen_str) = trial.attrs.get(&generation_key) {
-                if let Ok(generation) = gen_str.parse::<u32>() {
+                if let Ok(generation) = json_to_plain(gen_str).parse::<u32>() {
                     generation_to_numbers
                         .entry(generation)
                         .or_default()
@@ -181,12 +274,13 @@ impl NSGAIISampler {
         encoded: &str,
         population_size: usize,
     ) -> Result<Option<Vec<u32>>> {
-        let trial_ids: Vec<u32> = serde_json::from_str(encoded).map_err(|error| {
-            Error::with_reason(
-                ErrorKind::StorageError,
-                format!("Invalid NSGA-II parent cache: {error}"),
-            )
-        })?;
+        let trial_ids: Vec<u32> =
+            serde_json::from_str(&json_to_plain(encoded)).map_err(|error| {
+                Error::with_reason(
+                    ErrorKind::StorageError,
+                    format!("Invalid NSGA-II parent cache: {error}"),
+                )
+            })?;
         if trial_ids.len() != population_size {
             return Ok(None);
         }
@@ -315,7 +409,7 @@ impl NSGAIISampler {
         Ok(child)
     }
 }
-impl Sampler for NSGAIISampler {
+impl Sampler for NsgaiiSampler {
     fn sample_independent(
         &self,
         _ctx: &Context,
@@ -459,13 +553,18 @@ impl Sampler for NSGAIISampler {
             let trials = guard.get_trials(ctx.study_id)?;
             self.get_parent_population_numbers(ctx, trials, child_generation, cached_parent)?
         };
+        let format = guard.attr_format();
         let mut attrs = Attrs::with_capacity(1);
         attrs.insert(
             AttrKey::System("generation".into()),
-            (child_generation as f64).to_string(),
+            format.encode_plain((child_generation as f64).to_string()),
         );
         guard.set_trial_attrs(ctx.trial_id, attrs, false)?;
         if !parent_cache_attrs.is_empty() {
+            let parent_cache_attrs = parent_cache_attrs
+                .into_iter()
+                .map(|(key, value)| (key, format.encode_plain(value)))
+                .collect();
             guard.set_study_attrs(ctx.study_id, parent_cache_attrs, false)?;
         }
 
@@ -544,7 +643,7 @@ impl Sampler for NSGAIISampler {
             let trial = guard.get_trial(ctx.trial_id)?;
             let generation_key = AttrKey::System("generation".into());
             if let Some(gen_str) = trial.attrs.get(&generation_key) {
-                if let Ok(generation) = gen_str.parse::<u32>() {
+                if let Ok(generation) = json_to_plain(gen_str).parse::<u32>() {
                     let mut generation_to_numbers = self.generation_to_numbers.write().unwrap();
                     generation_to_numbers
                         .entry(generation)
@@ -770,7 +869,7 @@ mod tests {
         let study = create_study(
             "simple-quadratic",
             storage,
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             directions,
         )
         .unwrap();
@@ -797,7 +896,7 @@ mod tests {
         let study = create_study(
             "single-value-test",
             storage,
-            NSGAIISampler::new(3, None, 0.9, 0.5),
+            NsgaiiSampler::new(3, None, 0.9, 0.5),
             directions,
         )
         .unwrap();
@@ -856,7 +955,7 @@ mod tests {
         let study = create_study(
             "constraints",
             storage,
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             directions,
         )
         .unwrap();
@@ -885,7 +984,7 @@ mod tests {
         let study = create_study(
             "uncompleted_trial",
             storage,
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             directions,
         )
         .unwrap();
@@ -920,7 +1019,7 @@ mod tests {
             let study = create_study(
                 "reproducibility-test",
                 storage,
-                NSGAIISampler::seed_from_u64(42, 10, None, 0.9, 0.5),
+                NsgaiiSampler::seed_from_u64(42, 10, None, 0.9, 0.5),
                 directions,
             )
             .unwrap();
@@ -969,7 +1068,7 @@ mod tests {
         let study = create_study(
             "parent-cache-test",
             storage,
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             directions,
         )
         .unwrap();
@@ -1003,7 +1102,7 @@ mod tests {
         let study = create_study(
             "parent-cache-restart",
             storage,
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             directions,
         )
         .unwrap();
@@ -1033,7 +1132,7 @@ mod tests {
         assert!(!cached_ids.is_empty(), "cache should exist before restart");
 
         // Create a new sampler instance (simulating restart) and run more trials.
-        let new_sampler = NSGAIISampler::new(2, None, 1.0, 1.0);
+        let new_sampler = NsgaiiSampler::new(2, None, 1.0, 1.0);
         let resumed = rustuna_core::study::Study::from_id(
             study.id,
             std::sync::Arc::clone(&study.storage),
@@ -1061,7 +1160,7 @@ mod tests {
         let study = create_study(
             "parent-cache-invalid",
             InMemoryStorage::new(),
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             vec![Direction::Minimize, Direction::Minimize],
         )
         .unwrap();
@@ -1075,7 +1174,7 @@ mod tests {
             )
             .unwrap();
 
-        let cache_key = NSGAIISampler::parent_cache_key(1);
+        let cache_key = NsgaiiSampler::parent_cache_key(1);
         {
             let mut attrs = Attrs::new();
             attrs.insert(cache_key.clone(), "[]".to_string());
@@ -1090,7 +1189,7 @@ mod tests {
         let resumed = rustuna_core::study::Study::from_id(
             study.id,
             Arc::clone(&study.storage),
-            Arc::new(NSGAIISampler::new(2, None, 1.0, 1.0)),
+            Arc::new(NsgaiiSampler::new(2, None, 1.0, 1.0)),
         )
         .unwrap();
         resumed.ask().unwrap();
@@ -1108,7 +1207,7 @@ mod tests {
     #[test]
     fn test_parent_population_cache_preserves_parent_order() {
         let completed_trial_numbers_by_id = HashMap::from([(10, 2), (20, 0), (30, 1)]);
-        let population_numbers = NSGAIISampler::decode_parent_population_numbers(
+        let population_numbers = NsgaiiSampler::decode_parent_population_numbers(
             |trial_id| Ok(completed_trial_numbers_by_id.get(&trial_id).copied()),
             "[10,20,30]",
             3,
@@ -1124,7 +1223,7 @@ mod tests {
         let study = create_study(
             "parent-cache-population-size",
             InMemoryStorage::new(),
-            NSGAIISampler::new(2, None, 1.0, 1.0),
+            NsgaiiSampler::new(2, None, 1.0, 1.0),
             vec![Direction::Minimize, Direction::Minimize],
         )
         .unwrap();
@@ -1141,7 +1240,7 @@ mod tests {
         let resumed = rustuna_core::study::Study::from_id(
             study.id,
             Arc::clone(&study.storage),
-            Arc::new(NSGAIISampler::new(3, None, 1.0, 1.0)),
+            Arc::new(NsgaiiSampler::new(3, None, 1.0, 1.0)),
         )
         .unwrap();
         let generation_zero_trial = resumed.ask().unwrap();
@@ -1157,7 +1256,7 @@ mod tests {
             .storage
             .write()
             .unwrap()
-            .get_study_attr(resumed.id, NSGAIISampler::parent_cache_key(1))
+            .get_study_attr(resumed.id, NsgaiiSampler::parent_cache_key(1))
             .unwrap();
         let parent_ids: Vec<u32> = serde_json::from_str(&encoded).unwrap();
         assert_eq!(parent_ids.len(), 3);

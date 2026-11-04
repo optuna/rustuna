@@ -5,13 +5,14 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 use pyo3::types::{PyDict, PyList};
-use rustuna_core::attr::{AttrKey, Attrs, CategoryLabel};
+use rustuna_core::attr::{AttrFormat, AttrKey, Attrs, CategoryLabel};
 use rustuna_core::distribution::Distribution;
-use rustuna_core::storage::{InMemoryStorage, Storage};
+use rustuna_core::storage::{InMemoryStorage, InMemoryStorageBuilder, Storage};
 use rustuna_core::study::{Direction, PersistedStudy};
 use rustuna_core::trial::{PersistedTrial, TrialState, TrialStateValues};
 use rustuna_core::{Error, ErrorKind};
 
+use crate::attrs::decode_attr_value;
 use crate::distribution::PyDistribution;
 use crate::exception::err_to_exceptions;
 use crate::study::{pyobject_to_persisted_study, PyDirection};
@@ -37,7 +38,9 @@ impl ToRustStorage {
     pub fn new(obj: Py<PyAny>) -> Self {
         ToRustStorage {
             obj,
-            cache: InMemoryStorage::new(),
+            cache: InMemoryStorageBuilder::new()
+                .attr_format(AttrFormat::Json)
+                .build(),
             cache_study_to_src_study: HashMap::new(),
             src_study_to_cache_study: HashMap::new(),
         }
@@ -189,10 +192,10 @@ impl ToRustStorage {
             for (k, v) in attrs.into_iter() {
                 match k {
                     AttrKey::System(k) => {
-                        py_system_attrs.set_item(k.as_str(), v)?;
+                        py_system_attrs.set_item(k.as_str(), decode_attr_value(py, &v)?)?;
                     }
                     AttrKey::User(k) => {
-                        py_user_attrs.set_item(k.as_str(), v)?;
+                        py_user_attrs.set_item(k.as_str(), decode_attr_value(py, &v)?)?;
                     }
                 }
             }
@@ -228,10 +231,10 @@ impl ToRustStorage {
             for (k, v) in attrs.into_iter() {
                 match k {
                     AttrKey::System(k) => {
-                        py_system_attrs.set_item(k.as_str(), v)?;
+                        py_system_attrs.set_item(k.as_str(), decode_attr_value(py, &v)?)?;
                     }
                     AttrKey::User(k) => {
-                        py_user_attrs.set_item(k.as_str(), v)?;
+                        py_user_attrs.set_item(k.as_str(), decode_attr_value(py, &v)?)?;
                     }
                 }
             }
@@ -803,6 +806,10 @@ impl Storage for ToRustStorage {
                 .map_err(Self::map_pyerr)?;
             Ok(())
         })
+    }
+
+    fn attr_format(&self) -> AttrFormat {
+        AttrFormat::Json
     }
 
     fn may_omit_trials(&self) -> bool {

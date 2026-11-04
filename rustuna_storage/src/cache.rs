@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rustuna_core::attr::{
-    category_labels_to_attrs, get_category_labels, AttrKey, Attrs, CategoryLabel,
+    category_labels_to_attrs, get_category_labels, AttrFormat, AttrKey, Attrs, CategoryLabel,
 };
 use rustuna_core::distribution::Distribution;
 use rustuna_core::internal::study_cache::StudyCache;
@@ -80,12 +80,20 @@ pub trait CachedStorageBackend: Send + Sync {
     /// Whether reads from this backend omit discarded trials.
     ///
     /// This mirrors the `apply_discard` setting of the storage builders (e.g.
-    /// [`InMemoryStorageBuilder`](rustuna_core::storage::InMemoryStorageBuilder) and
-    /// [`JournalStorageBuilder`](crate::journal::storage::JournalStorageBuilder)):
-    /// [`Self::discard_trials`] persists the discard regardless of this flag, which only
-    /// decides whether reads apply it.
+    /// [`InMemoryStorageBuilder::apply_discard`](rustuna_core::storage::InMemoryStorageBuilder::apply_discard)
+    /// and
+    /// [`JournalStorageBuilder::apply_discard`](crate::journal::storage::JournalStorageBuilder::apply_discard)):
+    /// [`Self::discard_trials`] persists the discard regardless of this flag, which only decides
+    /// whether reads apply it.
     fn apply_discard(&self) -> bool {
         false
+    }
+    /// Representation of attribute values stored by this backend.
+    ///
+    /// `CachedStorage` does not interpret the values; see
+    /// [`rustuna_core::storage::Storage::attr_format`].
+    fn attr_format(&self) -> AttrFormat {
+        AttrFormat::Plain
     }
     fn discard_trials(&mut self, trial_ids: &[u32]) -> Result<()>;
 
@@ -136,6 +144,7 @@ pub struct CachedStorage {
     category_labels_cache: HashMap<(u32, String), Vec<CategoryLabel>>,
 
     apply_discard: bool,
+    attr_format: AttrFormat,
     backend: Box<dyn CachedStorageBackend>,
 }
 
@@ -155,6 +164,7 @@ impl CachedStorage {
             discard_cursor: HashMap::new(),
             category_labels_cache: HashMap::new(),
             apply_discard: backend.apply_discard(),
+            attr_format: backend.attr_format(),
             backend,
         }
     }
@@ -620,7 +630,7 @@ impl rustuna_core::storage::Storage for CachedStorage {
         param_name: &str,
         labels: Vec<CategoryLabel>,
     ) -> Result<()> {
-        let attrs = category_labels_to_attrs(param_name, &labels);
+        let attrs = category_labels_to_attrs(param_name, &labels, self.attr_format);
         self.backend.set_study_attrs(study_id, attrs, true)?;
         self.category_labels_cache
             .insert((study_id, param_name.to_string()), labels);
@@ -778,6 +788,10 @@ impl rustuna_core::storage::Storage for CachedStorage {
 
     fn may_omit_trials(&self) -> bool {
         self.apply_discard
+    }
+
+    fn attr_format(&self) -> AttrFormat {
+        self.attr_format
     }
 }
 

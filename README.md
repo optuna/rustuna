@@ -95,3 +95,8 @@ If you use Rustuna for your research, please cite it using the following BibTeX 
 ## License
 
 MIT License
+
+## Acknowledgement
+
+Rustuna is developed and maintained by [Preferred Networks](https://www.preferred.jp/en/)™
+(PFN™) and [community contributors](https://github.com/optuna/rustuna/graphs/contributors).

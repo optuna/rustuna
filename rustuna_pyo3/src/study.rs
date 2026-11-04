@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyFloat, PyInt, PyIterator, PyString, PyType};
+use pyo3::types::{PyDict, PyFloat, PyInt, PyIterator, PyType};
 use pyo3::{PyTypeInfo, Python};
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyUserWarning, PyValueError};
@@ -17,10 +17,13 @@ use rustuna_core::trial::TrialStateValues;
 use rustuna_sampler::tpe::TpeSampler;
 
 use crate::attrs::pyobj_to_attrs;
-use crate::attrs::{convert_pydict_to_fixed_params, pyobj_to_attrs_with_kind, AttrKind};
+use crate::attrs::{
+    convert_pydict_to_fixed_params, decode_attr_value, encode_attr_value, pyobj_to_attrs_with_kind,
+    AttrKind,
+};
 use crate::exception::err_to_exceptions;
 use crate::sampler::cmaes::PyCmaEsSampler;
-use crate::sampler::nsgaii::PyNSGAIISampler;
+use crate::sampler::nsgaii::PyNsgaiiSampler;
 use crate::sampler::random::PyRandomSampler;
 use crate::sampler::to_rust::ToRustSampler;
 use crate::sampler::tpe::PyTpeSampler;
@@ -28,6 +31,7 @@ use crate::storage::cached::PyCachedStorage;
 use crate::storage::in_memory::PyInMemoryStorage;
 use crate::storage::journal::PyJournalFileStorage;
 use crate::storage::sqlite3::PySQLite3Storage;
+use crate::storage::to_python::ToPythonStorage;
 use crate::storage::to_rust::ToRustStorage;
 use crate::trial::{PyPersistedTrial, PyTrial, PyTrialState};
 use crate::trial_queue::directory::PyDirectoryTrialQueue;
@@ -37,7 +41,7 @@ use crate::trial_queue::to_rust::ToRustTrialQueue;
 
 type SharedStorage = Arc<RwLock<dyn Storage>>;
 type SharedSampler = Arc<dyn Sampler>;
-type SharedTrialQueue = Arc<RwLock<dyn rustuna_core::trial_queue::TrialQueue>>;
+type SharedTrialQueue = Arc<dyn rustuna_core::trial_queue::TrialQueue>;
 
 mod py_exceptions {
     pyo3::import_exception!(rustuna.exceptions, TrialPruned);
@@ -169,9 +173,8 @@ fn into_trial_queue_pyobj(
                     trial_queue.clone_ref(py),
                 ))
             } else {
-                let queue: SharedTrialQueue = Arc::new(RwLock::new(ToRustTrialQueue::new(
-                    trial_queue.clone_ref(py),
-                )));
+                let queue: SharedTrialQueue =
+                    Arc::new(ToRustTrialQueue::new(trial_queue.clone_ref(py)));
                 Ok((queue, trial_queue.clone_ref(py)))
             }
         }
@@ -190,7 +193,11 @@ fn resolve_storage_pyobj(
 ) -> PyResult<(SharedStorage, Py<PyAny>)> {
     let storage_pyobj = storage.clone_ref(py);
     let storage_ref = storage.bind(py);
-    if let Ok(py_inmemory_storage) = storage_ref.extract::<PyInMemoryStorage>() {
+    // Python sampler callbacks receive this view of the native storage. Reuse its
+    // Arc rather than wrapping it in ToRustStorage and round-tripping every trial.
+    if let Ok(py_storage) = storage_ref.extract::<PyRef<'_, ToPythonStorage>>() {
+        Ok((py_storage.storage(), storage_pyobj))
+    } else if let Ok(py_inmemory_storage) = storage_ref.extract::<PyInMemoryStorage>() {
         Ok((py_inmemory_storage.storage(), storage_pyobj))
     } else if let Ok(py_cached_storage) = storage_ref.extract::<PyCachedStorage>() {
         Ok((py_cached_storage.storage(), storage_pyobj))
@@ -229,7 +236,7 @@ fn resolve_sampler_pyobj(
     let sampler_ref = sampler.bind(py);
     if let Ok(py_tpe_sampler) = sampler_ref.extract::<PyTpeSampler>() {
         Ok((py_tpe_sampler.sampler.clone(), sampler_pyobj))
-    } else if let Ok(py_nsgaii_sampler) = sampler_ref.extract::<PyNSGAIISampler>() {
+    } else if let Ok(py_nsgaii_sampler) = sampler_ref.extract::<PyNsgaiiSampler>() {
         Ok((py_nsgaii_sampler.sampler.clone(), sampler_pyobj))
     } else if let Ok(py_cmaes_sampler) = sampler_ref.extract::<PyCmaEsSampler>() {
         Ok((py_cmaes_sampler.sampler.clone(), sampler_pyobj))
@@ -566,7 +573,7 @@ impl PyStudy {
 
     pub fn add_trial(&self, trial: &Bound<'_, PyPersistedTrial>) -> PyResult<()> {
         // Extract the underlying PersistedTrial
-        let persisted_trial = trial.borrow().with_trial(|t| Ok(t.clone()))?;
+        let persisted_trial = trial.borrow().to_persisted_trial()?;
 
         // Call the core implementation
         self.study
@@ -577,9 +584,9 @@ impl PyStudy {
     }
 
     #[pyo3(signature = (key, value))]
-    pub fn set_user_attr(&self, key: String, value: String) -> PyResult<()> {
+    pub fn set_user_attr(&self, key: String, value: &Bound<'_, PyAny>) -> PyResult<()> {
         let mut attrs = rustuna_core::attr::Attrs::new();
-        attrs.insert(AttrKey::User(key.into()), value);
+        attrs.insert(AttrKey::User(key.into()), encode_attr_value(value)?);
         let mut guard = self.study.storage.write().map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
         })?;
@@ -603,12 +610,11 @@ impl PyStudy {
         Ok(())
     }
 
-    #[pyo3(name = "get_user_attr", signature = (key, *, decoder = None, default = None))]
+    #[pyo3(name = "get_user_attr", signature = (key, *, default = None))]
     pub fn get_user_attr<'py>(
         &self,
         py: Python<'py>,
         key: String,
-        decoder: Option<Py<PyAny>>,
         default: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let result = {
@@ -618,13 +624,7 @@ impl PyStudy {
             guard.get_study_attr(self.study.id, AttrKey::User(key.into()))
         };
         match result {
-            Ok(value) => match decoder {
-                Some(decoder) => {
-                    let decoded = decoder.call1(py, (&value,))?;
-                    Ok(decoded)
-                }
-                None => Ok(PyString::new(py, &value).into_any().unbind()),
-            },
+            Ok(value) => decode_attr_value(py, &value),
             Err(e) if matches!(e.kind, ErrorKind::AttrNotFound) => {
                 Ok(default.unwrap_or_else(|| py.None()))
             }
@@ -703,7 +703,7 @@ impl PyStudy {
     }
 
     #[getter]
-    pub fn user_attrs(&self) -> PyResult<HashMap<String, String>> {
+    pub fn user_attrs(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut guard = self
             .study
             .storage
@@ -712,13 +712,13 @@ impl PyStudy {
         let study = guard
             .get_study(self.study.id)
             .map_err(|e| PyRuntimeError::new_err(format!("Failed to get study: {:?}", e.kind)))?;
-        let mut user_attrs = HashMap::new();
+        let user_attrs = PyDict::new(py);
         for (key, value) in &study.attrs {
             if let AttrKey::User(k) = key {
-                user_attrs.insert(k.to_string(), value.clone());
+                user_attrs.set_item(k.as_str(), decode_attr_value(py, value)?)?;
             }
         }
-        Ok(user_attrs)
+        Ok(user_attrs.unbind())
     }
 
     #[getter(_study_id)]
@@ -926,14 +926,21 @@ pub fn py_copy_study(
 
 #[derive(Debug, Clone)]
 #[pyclass(name = "PersistedStudy", skip_from_py_object)]
-#[pyo3(module = "rustuna", get_all, set_all)]
+#[pyo3(module = "rustuna")]
 pub struct PyPersistedStudy {
+    #[pyo3(get, set)]
     pub id: u32,
+    #[pyo3(get, set)]
     pub name: String,
+    #[pyo3(get, set)]
     pub directions: Vec<PyDirection>,
-    pub user_attrs: HashMap<String, String>,
-    pub system_attrs: HashMap<String, String>,
+    /// User attribute values as stored in the storage, i.e. JSON texts. Exposed through the
+    /// `user_attrs` property, which decodes them.
+    pub raw_user_attrs: HashMap<String, String>,
+    /// System attribute values as stored in the storage. See `raw_user_attrs`.
+    pub raw_system_attrs: HashMap<String, String>,
 }
+
 impl From<PersistedStudy> for PyPersistedStudy {
     fn from(item: PersistedStudy) -> Self {
         let cap = std::cmp::min(item.attrs.len() / 2, 1);
@@ -955,8 +962,8 @@ impl From<PersistedStudy> for PyPersistedStudy {
             id: item.id,
             name: item.name,
             directions,
-            user_attrs,
-            system_attrs,
+            raw_user_attrs: user_attrs,
+            raw_system_attrs: system_attrs,
         }
     }
 }
@@ -970,16 +977,44 @@ impl PyPersistedStudy {
         id: u32,
         name: String,
         directions: Vec<PyDirection>,
-        user_attrs: Option<HashMap<String, String>>,
-        system_attrs: Option<HashMap<String, String>>,
-    ) -> Self {
-        PyPersistedStudy {
+        user_attrs: Option<&Bound<'_, PyAny>>,
+        system_attrs: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        Ok(PyPersistedStudy {
             id,
             name,
             directions,
-            user_attrs: user_attrs.unwrap_or_default(),
-            system_attrs: system_attrs.unwrap_or_default(),
-        }
+            raw_user_attrs: user_attrs
+                .map(|attrs| encode_attrs(attrs, AttrKind::User))
+                .transpose()?
+                .unwrap_or_default(),
+            raw_system_attrs: system_attrs
+                .map(|attrs| encode_attrs(attrs, AttrKind::System))
+                .transpose()?
+                .unwrap_or_default(),
+        })
+    }
+
+    #[getter]
+    fn user_attrs(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        decode_attrs_to_pydict(py, &self.raw_user_attrs)
+    }
+
+    #[setter]
+    fn set_user_attrs(&mut self, user_attrs: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.raw_user_attrs = encode_attrs(user_attrs, AttrKind::User)?;
+        Ok(())
+    }
+
+    #[getter]
+    fn system_attrs(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        decode_attrs_to_pydict(py, &self.raw_system_attrs)
+    }
+
+    #[setter]
+    fn set_system_attrs(&mut self, system_attrs: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.raw_system_attrs = encode_attrs(system_attrs, AttrKind::System)?;
+        Ok(())
     }
 
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
@@ -991,11 +1026,30 @@ impl PyPersistedStudy {
     fn __str__(&self) -> PyResult<String> {
         Ok(format!(
             "id={} name={} user_attrs={:?} system_attrs={:?}",
-            self.id, self.name, self.user_attrs, self.system_attrs
+            self.id, self.name, self.raw_user_attrs, self.raw_system_attrs
         ))
     }
 }
 
+fn decode_attrs_to_pydict(py: Python<'_>, attrs: &HashMap<String, String>) -> PyResult<Py<PyDict>> {
+    let dict = PyDict::new(py);
+    for (key, value) in attrs {
+        dict.set_item(key, decode_attr_value(py, value)?)?;
+    }
+    Ok(dict.unbind())
+}
+
+fn encode_attrs(attrs: &Bound<'_, PyAny>, kind: AttrKind) -> PyResult<HashMap<String, String>> {
+    Ok(pyobj_to_attrs_with_kind(attrs, kind)?
+        .into_iter()
+        .map(|(key, value)| match key {
+            AttrKey::User(k) | AttrKey::System(k) => (k.to_string(), value),
+        })
+        .collect())
+}
+
+/// Converts a study returned by a Python storage. Its attribute values are JSON-serializable
+/// objects.
 pub fn pyobject_to_persisted_study(study: &Bound<'_, PyAny>) -> PyResult<PersistedStudy> {
     let study_id = study.getattr("id")?.extract::<u32>()?;
     let name = study.getattr("name")?.extract::<String>()?;

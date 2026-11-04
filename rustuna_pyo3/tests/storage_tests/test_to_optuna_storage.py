@@ -37,6 +37,14 @@ def storage(request: FixtureRequest) -> Generator[BaseStorage, None, None]:
         yield ToOptunaStorage(rustuna_storage)
 
 
+def _skip_non_finite_attrs_on_journal(storage: BaseStorage) -> None:
+    assert isinstance(storage, ToOptunaStorage)
+    if isinstance(storage._storage, rustuna.storages.JournalFileStorage):
+        pytest.skip(
+            "Journal logs must be strict JSON, so NaN and Infinity are rejected."
+        )
+
+
 class TestRustunaStorage(StorageTestCase):
     def test_get_all_studies(self, storage: BaseStorage) -> None:
         expected_frozen_studies, _ = _setup_studies(
@@ -93,6 +101,28 @@ class TestRustunaStorage(StorageTestCase):
         trials2 = storage.get_all_trials(study_id)
         assert len(trials2) == 2
         assert {t._trial_id for t in trials2} == {trial_id0, trial_id1}
+
+    def test_set_and_get_study_user_attrs_for_floats(
+        self, storage: BaseStorage
+    ) -> None:
+        _skip_non_finite_attrs_on_journal(storage)
+        super().test_set_and_get_study_user_attrs_for_floats(storage)
+
+    def test_set_and_get_trial_user_attr_for_floats(self, storage: BaseStorage) -> None:
+        _skip_non_finite_attrs_on_journal(storage)
+        super().test_set_and_get_trial_user_attr_for_floats(storage)
+
+    def test_set_and_get_study_system_attrs_for_floats(
+        self, storage: BaseStorage
+    ) -> None:
+        _skip_non_finite_attrs_on_journal(storage)
+        super().test_set_and_get_study_system_attrs_for_floats(storage)
+
+    def test_set_and_get_trial_system_attr_for_floats(
+        self, storage: BaseStorage
+    ) -> None:
+        _skip_non_finite_attrs_on_journal(storage)
+        super().test_set_and_get_trial_system_attr_for_floats(storage)
 
     @pytest.mark.skip("Rustuna cannot store objective values for failed state")
     def test_get_trial(self, storage: BaseStorage) -> None:

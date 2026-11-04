@@ -1,0 +1,38 @@
+rustuna_core:
+  - changed-files:
+      - any-glob-to-any-file: rustuna_core/**
+
+rustuna_sampler:
+  - changed-files:
+      - any-glob-to-any-file: rustuna_sampler/**
+
+rustuna_storage:
+  - changed-files:
+      - any-glob-to-any-file: rustuna_storage/**
+
+rustuna_importance:
+  - changed-files:
+      - any-glob-to-any-file: rustuna_importance/**
+
+python:
+  - changed-files:
+      - any-glob-to-any-file: rustuna_pyo3/**
+
+javascript:
+  - changed-files:
+      - any-glob-to-any-file: rustuna_js/**
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - docs/**
+          - '**/*.md'
+          - .readthedocs.yml
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/workflows/**
+          - .github/dependabot.yml
+          - .github/labeler.yml
+          - .github/release.yml

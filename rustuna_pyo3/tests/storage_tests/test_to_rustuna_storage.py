@@ -16,6 +16,34 @@ if TYPE_CHECKING:
     from rustuna._rustuna import Distribution
 
 
+def test_user_attrs_written_by_rustuna_keep_types_in_optuna_storage() -> None:
+    attrs = {
+        "int": 1,
+        "float": 0.5,
+        "str": "123",
+        "none": None,
+        "bool": True,
+        "list": [1, "a", None],
+        "dict": {"nested": {"x": [0.1, 0.2]}},
+    }
+    optuna_storage = optuna.storages.InMemoryStorage()
+    rustuna_study = rustuna.create_study(
+        storage=ToRustunaStorage(optuna_storage), study_name="rustuna"
+    )
+    rustuna_study.set_user_attrs(attrs)
+    trial = rustuna_study.ask()
+    trial.set_user_attrs(attrs)
+    rustuna_study.tell(trial.number, 1.0)
+    rustuna_study.add_trial(rustuna.create_trial(value=2.0, user_attrs=attrs))
+    rustuna_study.enqueue_trial({}, user_attrs=attrs)
+
+    optuna_study = optuna.load_study(study_name="rustuna", storage=optuna_storage)
+    assert optuna_study.user_attrs == attrs
+    assert len(optuna_study.trials) == 3
+    for optuna_trial in optuna_study.trials:
+        assert optuna_trial.user_attrs == attrs
+
+
 def test_optimize_with_optuna_storage():
     def objective(trial: rustuna.Trial | optuna.Trial) -> float:
         return trial.suggest_float("x", -10, 10) ** 2

@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use crate::attr::{category_labels_to_attrs, AttrKey, Attrs, CategoryLabel};
+use crate::attr::{
+    category_labels_to_attrs, extract_fixed_params, json_to_plain, AttrFormat, AttrKey, Attrs,
+    CategoryLabel,
+};
 use crate::distribution::Distribution;
 use crate::sampler::{Context as SamplerContext, Sampler};
 use crate::storage::Storage;
@@ -29,27 +32,29 @@ pub struct Trial {
     cached_user_attrs: HashMap<String, String>,
 }
 impl Trial {
-    /// Constructs a trial from storage and sampler state.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        trial_id: u32,
-        study_id: u32,
-        number: u32,
-        datetime_start: Option<String>,
-        datetime_complete: Option<String>,
+    /// Constructs a trial from persisted trial and sampler state.
+    pub(crate) fn new(
+        trial: PersistedTrial,
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
         sampler: Arc<dyn Sampler>,
         joint_params: HashMap<String, (Distribution, f64)>,
-        fixed_params: HashMap<String, CategoryLabel>,
     ) -> Self {
-        let cached_user_attrs = HashMap::new();
+        let fixed_params = extract_fixed_params(&trial.attrs);
+        let cached_user_attrs = trial
+            .attrs
+            .into_iter()
+            .filter_map(|(key, value)| match key {
+                AttrKey::User(key) => Some((key.as_str().to_string(), value)),
+                AttrKey::System(_) => None,
+            })
+            .collect();
         Trial {
-            id: trial_id,
-            study_id,
-            number,
-            datetime_start,
-            datetime_complete,
+            id: trial.id,
+            study_id: trial.study_id,
+            number: trial.number,
+            datetime_start: trial.datetime_start,
+            datetime_complete: trial.datetime_complete,
             directions,
             storage,
             sampler,
@@ -174,13 +179,13 @@ impl Trial {
 
         // Save labels in the study system attr before calling suggest(),
         // so that fixed_params can look up category labels during suggest().
-        let category_labels = category_labels_to_attrs(name, choices);
         let mut guard = storage.write().map_err(|e| {
             Error::with_reason(
                 ErrorKind::Unexpected,
                 format!("Failed to acquire storage guard: {e}"),
             )
         })?;
+        let category_labels = category_labels_to_attrs(name, choices, guard.attr_format());
         guard.set_study_attrs(study_id, category_labels, false)?;
         drop(guard);
 
@@ -207,6 +212,17 @@ impl Trial {
     pub fn get_user_attr(&mut self, key: &str) -> Option<&String> {
         self.cached_user_attrs.get(key)
     }
+    /// Returns how attribute values are represented in the trial's storage.
+    pub fn attr_format(&self) -> Result<AttrFormat> {
+        let guard = self.storage.read().map_err(|e| {
+            Error::with_reason(
+                ErrorKind::StorageError,
+                format!("Failed to acquire the storage guard: {e}"),
+            )
+        })?;
+        Ok(guard.attr_format())
+    }
+
     /// Returns user attributes stored on the trial.
     pub fn get_user_attrs(&self) -> HashMap<String, String> {
         self.cached_user_attrs.clone()
@@ -250,6 +266,7 @@ impl Trial {
 
     /// Sets multiple constraints on the trial.
     pub fn set_constraints(&mut self, constraints: HashMap<String, f64>) -> Result<()> {
+        let format = self.attr_format()?;
         let mut attrs = Attrs::with_capacity(constraints.len());
         for (key, value) in constraints {
             if value.is_nan() {
@@ -261,7 +278,7 @@ impl Trial {
             let key_with_constraint_prefix = format!("{}:{}", CONSTRAINTS_KEY, key);
             attrs.insert(
                 AttrKey::System(key_with_constraint_prefix.as_str().into()),
-                value.to_string(),
+                format.encode_plain(value.to_string()),
             );
         }
         let mut guard = self.storage.write().map_err(|e| {
@@ -388,7 +405,7 @@ impl PersistedTrial {
             if let AttrKey::System(key_system) = key {
                 if let Some(key) = key_system.as_str().strip_prefix(CONSTRAINTS_PREFIX) {
                     let key: String = key.into();
-                    let value: f64 = value.parse::<f64>().map_err(|e| {
+                    let value: f64 = json_to_plain(value).parse::<f64>().map_err(|e| {
                         Error::with_reason(
                             ErrorKind::Unexpected,
                             format!("Failed to parse constraint as f64 : {e}"),

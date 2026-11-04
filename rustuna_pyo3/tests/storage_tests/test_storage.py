@@ -82,20 +82,21 @@ def test_get_study_attr_methods(storage: StorageProtocol) -> None:
 
 def test_study_get_user_attr_method(storage: StorageProtocol) -> None:
     study = rustuna.create_study(storage=storage)
-    study.set_user_attr("key", "1")
-    assert study.get_user_attr("key", decoder=int) == 1
+    study.set_user_attr("key", 1)
+    assert study.get_user_attr("key") == 1
     assert study.get_user_attr("not_found") is None
     assert study.get_user_attr("not_found", default=1) == 1
 
 
-def test_trial_get_user_attr_method(storage: StorageProtocol) -> None:
+def test_persisted_trial_user_attrs_get(storage: StorageProtocol) -> None:
     study = rustuna.create_study(storage=storage)
     trial = study.ask()
-    trial.set_user_attr("key", "1")
-    persisted = study.tell(trial.number, 0.0)
-    assert persisted.get_user_attr("key", decoder=int) == 1
-    assert persisted.get_user_attr("not_found") is None
-    assert persisted.get_user_attr("not_found", default=1) == 1
+    trial.set_user_attr("key", 1)
+    study.tell(trial.number, 0.0)
+    persisted = study.get_trials()[0]
+    assert persisted.user_attrs.get("key") == 1
+    assert persisted.user_attrs.get("not_found") is None
+    assert persisted.user_attrs.get("not_found", 1) == 1
 
 
 def test_get_trials_with_states_filter(storage: StorageProtocol) -> None:

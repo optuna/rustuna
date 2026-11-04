@@ -130,6 +130,7 @@ def test_enqueue_trial_with_user_attrs(queue_type: TrialQueueType) -> None:
 
         trial = study.ask()
         assert trial.suggest_float("x", 0.0, 10.0) == 5.0
+        assert trial.user_attrs == {"memo": "test"}
 
 
 @parametrize_trial_queue

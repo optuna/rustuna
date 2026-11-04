@@ -11,7 +11,7 @@ classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
-version = "0.2.0.dev"
+version = "0.3.0.dev"
 
 [project.urls]
 homepage = "https://optuna.org/"
@@ -25,7 +25,7 @@ module-name = "rustuna._rustuna"
 
 [tool.uv]
 exclude-newer = "5 days"
-exclude-newer-package = { optuna = false }
+exclude-newer-package = { certifi = false, optuna = false }
 
 [tool.ruff.lint]
 select = ["E", "I"] # pycodestyle and isort

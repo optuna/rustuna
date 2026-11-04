@@ -25,7 +25,7 @@ impl ToRustTrialQueue {
 }
 
 impl TrialQueue for ToRustTrialQueue {
-    fn enqueue(&mut self, trial_id: u32) -> Result<()> {
+    fn enqueue(&self, trial_id: u32) -> Result<()> {
         Python::attach(|py| {
             self.obj
                 .call_method1(py, "enqueue", (trial_id,))
@@ -34,7 +34,7 @@ impl TrialQueue for ToRustTrialQueue {
         })
     }
 
-    fn dequeue(&mut self) -> Result<u32> {
+    fn dequeue(&self) -> Result<u32> {
         Python::attach(|py| {
             let trial_id = self
                 .obj

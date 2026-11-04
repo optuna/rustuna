@@ -63,13 +63,8 @@ impl SQLite3TrialQueue {
 }
 
 impl TrialQueue for SQLite3TrialQueue {
-    fn enqueue(&mut self, trial_id: u32) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::StorageError,
-                format!("Failed to acquire SQLite connection: {e}"),
-            )
-        })?;
+    fn enqueue(&self, trial_id: u32) -> Result<()> {
+        let conn = self.conn.lock().expect("SQLite trial queue mutex poisoned");
 
         // Use current timestamp in microseconds for ordering
         let enqueued_at = std::time::SystemTime::now()
@@ -108,13 +103,8 @@ impl TrialQueue for SQLite3TrialQueue {
         Ok(())
     }
 
-    fn dequeue(&mut self) -> Result<u32> {
-        let conn = self.conn.lock().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::StorageError,
-                format!("Failed to acquire SQLite connection: {e}"),
-            )
-        })?;
+    fn dequeue(&self) -> Result<u32> {
+        let conn = self.conn.lock().expect("SQLite trial queue mutex poisoned");
 
         // Use a transaction with IMMEDIATE to ensure exclusive access
         conn.execute("BEGIN IMMEDIATE", []).map_err(|e| {
@@ -182,7 +172,7 @@ mod tests {
     #[test]
     fn test_enqueue_and_dequeue() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue =
+        let queue =
             SQLite3TrialQueue::new(temp_dir.path().join("queue.sqlite3"), "study-1").unwrap();
 
         queue.enqueue(10).unwrap();
@@ -197,7 +187,7 @@ mod tests {
     #[test]
     fn test_dequeue_empty_queue() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue =
+        let queue =
             SQLite3TrialQueue::new(temp_dir.path().join("queue.sqlite3"), "study-1").unwrap();
 
         assert!(queue.dequeue().is_err());
@@ -206,7 +196,7 @@ mod tests {
     #[test]
     fn test_fifo_ordering() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue =
+        let queue =
             SQLite3TrialQueue::new(temp_dir.path().join("queue.sqlite3"), "study-1").unwrap();
 
         for i in 1..=100 {
@@ -222,8 +212,8 @@ mod tests {
     fn test_namespace_isolation() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("queue.sqlite3");
-        let mut queue1 = SQLite3TrialQueue::new(&db_path, "study-1").unwrap();
-        let mut queue2 = SQLite3TrialQueue::new(&db_path, "study-2").unwrap();
+        let queue1 = SQLite3TrialQueue::new(&db_path, "study-1").unwrap();
+        let queue2 = SQLite3TrialQueue::new(&db_path, "study-2").unwrap();
 
         queue1.enqueue(10).unwrap();
         queue1.enqueue(20).unwrap();
@@ -242,7 +232,7 @@ mod tests {
     #[test]
     fn test_push_pop_interleaved() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue =
+        let queue =
             SQLite3TrialQueue::new(temp_dir.path().join("queue.sqlite3"), "study-1").unwrap();
 
         queue.enqueue(1).unwrap();
@@ -262,13 +252,13 @@ mod tests {
         let db_path = temp_dir.path().join("queue.sqlite3");
 
         {
-            let mut queue = SQLite3TrialQueue::new(&db_path, "study-1").unwrap();
+            let queue = SQLite3TrialQueue::new(&db_path, "study-1").unwrap();
             queue.enqueue(10).unwrap();
             queue.enqueue(20).unwrap();
         }
 
         {
-            let mut queue = SQLite3TrialQueue::new(&db_path, "study-1").unwrap();
+            let queue = SQLite3TrialQueue::new(&db_path, "study-1").unwrap();
             assert_eq!(queue.dequeue().unwrap(), 10);
             assert_eq!(queue.dequeue().unwrap(), 20);
             assert!(queue.dequeue().is_err());

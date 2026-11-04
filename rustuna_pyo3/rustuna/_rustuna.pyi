@@ -96,7 +96,7 @@ class Trial:
         """Return the storage associated with this trial."""
 
     @property
-    def user_attrs(self) -> dict[str, str]:
+    def user_attrs(self) -> dict[str, Any]:
         """Return the user attributes."""
 
     def suggest_float(
@@ -147,21 +147,21 @@ class Trial:
             A suggested value.
         """
         ...
-    def set_user_attr(self, key: str, value: str) -> None:
+    def set_user_attr(self, key: str, value: Any) -> None:
         """Set a user attribute to the trial.
 
         Note:
-            Unlike Optuna, Rustuna accepts only str values for user attributes.
+            Values must be JSON serializable, as in Optuna.
 
         Args:
             key: A key string of the attribute.
             value: A value of the attribute. The value should be JSON serializable.
         """
-    def set_user_attrs(self, attrs: dict[str, str]) -> None:
+    def set_user_attrs(self, attrs: dict[str, Any]) -> None:
         """Set user attributes to the trial.
 
         Note:
-            Unlike Optuna, Rustuna accepts only str values for user attributes.
+            Values must be JSON serializable, as in Optuna.
 
         Args:
             attrs: A dictionary object.
@@ -201,20 +201,18 @@ class Trial:
                 recorded in that case.
         """
 
-class AttrsDictView(Mapping[str, str]):
+class AttrsDictView(Mapping[str, Any]):
     def __len__(self) -> int: ...
     def __iter__(self) -> Iterator[str]: ...
-    def __getitem__(self, key: str) -> str: ...
+    def __getitem__(self, key: str) -> Any: ...
     @overload
-    def get(self, key: str, default: None = ...) -> str | None: ...
+    def get(self, key: str, default: None = ...) -> Any | None: ...
     @overload
-    def get(self, key: str, default: str) -> str: ...
-    @overload
-    def get(self, key: str, default: _T) -> str | _T: ...
+    def get(self, key: str, default: _T) -> Any | _T: ...
     def keys(self) -> KeysView[str]: ...
-    def values(self) -> ValuesView[str]: ...
-    def items(self) -> ItemsView[str, str]: ...
-    def to_dict(self) -> dict[str, str]: ...
+    def values(self) -> ValuesView[Any]: ...
+    def items(self) -> ItemsView[str, Any]: ...
+    def to_dict(self) -> dict[str, Any]: ...
 
 class TrialState(enum.IntEnum):
     """State of a trial."""
@@ -263,8 +261,8 @@ class PersistedTrial:
         params: dict[str, CategoricalChoiceType] | None = None,
         distributions: dict[str, Distribution] | None = None,
         intermediate_values: dict[int, float] | None = None,
-        user_attrs: dict[str, str] | None = None,
-        system_attrs: dict[str, str] | None = None,
+        user_attrs: dict[str, Any] | None = None,
+        system_attrs: dict[str, Any] | None = None,
         datetime_start: datetime.datetime | None = None,
         datetime_complete: datetime.datetime | None = None,
     ) -> None: ...
@@ -298,36 +296,6 @@ class PersistedTrial:
     def datetime_start(self) -> datetime.datetime | None: ...
     @property
     def datetime_complete(self) -> datetime.datetime | None: ...
-    def get_user_attr(
-        self,
-        key: str,
-        *,
-        decoder: Callable[[str], Any] | None = None,
-        default: Any = None,
-    ) -> Any:
-        """Get a single user attribute value by key.
-
-        ``PersistedTrial`` internally may hold a reference to the storage backend
-        rather than a copy of all attribute data.  Accessing ``trial.user_attrs``
-        therefore triggers a full attribute fetch from the storage.  This method
-        retrieves only the requested key, which is both faster and uses less
-        memory when you need just one attribute.
-
-        It also provides a decoder callable and a default value for missing
-        keys, simplifying a common migration pattern from Optuna.
-
-        Args:
-            key: The attribute key to look up.
-            decoder: An optional callable to transform the stored string value
-                (e.g. ``int``, ``float``, ``json.loads``).  When ``None``, the
-                raw string is returned.
-            default: Value to return when the key does not exist.
-                Defaults to None.
-
-        Returns:
-            The attribute value (transformed by *decoder* if provided), or
-            *default* if the key is not found.
-        """
 
 # Study
 ObjectiveFuncType = Callable[[Trial], float | tuple[float, ...]]
@@ -340,8 +308,8 @@ def create_trial(
     params: dict[str, Any] | None = None,
     distributions: dict[str, Distribution] | None = None,
     intermediate_values: dict[int, float] | None = None,
-    user_attrs: dict[str, str] | None = None,
-    system_attrs: dict[str, str] | None = None,
+    user_attrs: dict[str, Any] | None = None,
+    system_attrs: dict[str, Any] | None = None,
 ) -> PersistedTrial:
     """Create a low-level PersistedTrial object.
 
@@ -674,7 +642,7 @@ class Study:
     def enqueue_trial(
         self,
         params: dict[str, Any],
-        user_attrs: dict[str, str] | None = None,
+        user_attrs: dict[str, Any] | None = None,
         # TODO(c-bata): Add support for skip_if_exists option
         # skip_if_exists: bool = False,
     ) -> None:
@@ -695,12 +663,12 @@ class Study:
     def set_user_attr(
         self,
         key: str,
-        value: str,
+        value: Any,
     ) -> None:
         """Set a user attribute to the study.
 
         Note:
-            Unlike Optuna, Rustuna accepts only str values for user attributes.
+            Values must be JSON serializable, as in Optuna.
 
         Args:
             key: A key string of the attribute.
@@ -720,12 +688,12 @@ class Study:
         """
     def set_user_attrs(
         self,
-        attrs: dict[str, str],
+        attrs: dict[str, Any],
     ) -> None:
         """Set user attributes to the study.
 
         Note:
-            Unlike Optuna, Rustuna accepts only str values for user attributes.
+            Values must be JSON serializable, as in Optuna.
 
         Args:
             attrs: A dictionary object.
@@ -744,31 +712,19 @@ class Study:
             }
             ```
         """
-    def get_user_attr(
-        self,
-        key: str,
-        *,
-        decoder: Callable[[str], Any] | None = None,
-        default: Any = None,
-    ) -> Any:
+    def get_user_attr(self, key: str, *, default: Any = None) -> Any:
         """Get a single user attribute value by key.
 
         This method fetches only the specified attribute from the storage backend,
         avoiding the overhead of loading all user attributes via ``study.user_attrs``.
-        It also provides a decoder callable and a default value for missing keys,
-        simplifying a common migration pattern from Optuna.
 
         Args:
             key: The attribute key to look up.
-            decoder: An optional callable to transform the stored string value
-                (e.g. ``int``, ``float``, ``json.loads``).  When ``None``, the
-                raw string is returned.
             default: Value to return when the key does not exist.
                 Defaults to None.
 
         Returns:
-            The attribute value (transformed by *decoder* if provided), or
-            *default* if the key is not found.
+            The attribute value, or *default* if the key is not found.
         """
     def get_trials(
         self,
@@ -786,7 +742,7 @@ class Study:
     def directions(self) -> list[StudyDirection]:
         """Return the optimization directions."""
     @property
-    def user_attrs(self) -> dict[str, str]:
+    def user_attrs(self) -> dict[str, Any]:
         """Return the user attributes."""
 
     @property
@@ -829,8 +785,8 @@ class PersistedStudy:
         id: int,
         name: str,
         directions: list[StudyDirection],
-        user_attrs: dict[str, str] | None = None,
-        system_attrs: dict[str, str] | None = None,
+        user_attrs: dict[str, Any] | None = None,
+        system_attrs: dict[str, Any] | None = None,
     ) -> None: ...
     @property
     def id(self) -> int: ...
@@ -839,14 +795,18 @@ class PersistedStudy:
     @property
     def directions(self) -> list[StudyDirection]: ...
     @property
-    def user_attrs(self) -> dict[str, str]: ...
+    def user_attrs(self) -> dict[str, Any]: ...
     @property
-    def system_attrs(self) -> dict[str, str]: ...
+    def system_attrs(self) -> dict[str, Any]: ...
 
 ## Storage
 
 class CachedStorage:
-    """Wrap a Python CachedStorageBackend with Rustuna's in-memory cache."""
+    """Wrap a Python CachedStorageBackend with Rustuna's in-memory cache.
+
+    Args:
+        backend: The backend implements CachedStorageBackend protocol.
+    """
     def __init__(self, backend: CachedStorageBackend) -> None: ...
     def create_new_study(
         self, study_name: str, directions: list[StudyDirection]
@@ -889,12 +849,12 @@ class CachedStorage:
     def get_trial_id_from_study_id_trial_number(
         self, study_id: int, trial_number: int
     ) -> int: ...
-    def get_study_user_attr(self, study_id: int, key: str) -> str: ...
-    def get_study_system_attr(self, study_id: int, key: str) -> str: ...
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
+    def get_study_user_attr(self, study_id: int, key: str) -> Any: ...
+    def get_study_system_attr(self, study_id: int, key: str) -> Any: ...
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
     def set_trial_intermediate_value(
         self, trial_id: int, step: int, intermediate_value: float
     ) -> None: ...
@@ -953,12 +913,12 @@ class ToRustStorage:
     def get_trial_id_from_study_id_trial_number(
         self, study_id: int, trial_number: int
     ) -> int: ...
-    def get_study_user_attr(self, study_id: int, key: str) -> str: ...
-    def get_study_system_attr(self, study_id: int, key: str) -> str: ...
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
+    def get_study_user_attr(self, study_id: int, key: str) -> Any: ...
+    def get_study_system_attr(self, study_id: int, key: str) -> Any: ...
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
     def set_trial_intermediate_value(
         self, trial_id: int, step: int, intermediate_value: float
     ) -> None: ...
@@ -1020,12 +980,12 @@ class InMemoryStorage:
     def get_trial_id_from_study_id_trial_number(
         self, study_id: int, trial_number: int
     ) -> int: ...
-    def get_study_user_attr(self, study_id: int, key: str) -> str: ...
-    def get_study_system_attr(self, study_id: int, key: str) -> str: ...
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
+    def get_study_user_attr(self, study_id: int, key: str) -> Any: ...
+    def get_study_system_attr(self, study_id: int, key: str) -> Any: ...
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
     def set_trial_intermediate_value(
         self, trial_id: int, step: int, intermediate_value: float
     ) -> None: ...
@@ -1093,12 +1053,12 @@ class JournalFileStorage:
     def get_trial_id_from_study_id_trial_number(
         self, study_id: int, trial_number: int
     ) -> int: ...
-    def get_study_user_attr(self, study_id: int, key: str) -> str: ...
-    def get_study_system_attr(self, study_id: int, key: str) -> str: ...
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
+    def get_study_user_attr(self, study_id: int, key: str) -> Any: ...
+    def get_study_system_attr(self, study_id: int, key: str) -> Any: ...
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
     def set_trial_intermediate_value(
         self, trial_id: int, step: int, intermediate_value: float
     ) -> None: ...
@@ -1174,12 +1134,12 @@ class SQLite3Storage:
     def get_trial_id_from_study_id_trial_number(
         self, study_id: int, trial_number: int
     ) -> int: ...
-    def get_study_user_attr(self, study_id: int, key: str) -> str: ...
-    def get_study_system_attr(self, study_id: int, key: str) -> str: ...
-    def set_study_system_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_study_user_attrs(self, study_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
-    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, str]) -> None: ...
+    def get_study_user_attr(self, study_id: int, key: str) -> Any: ...
+    def get_study_system_attr(self, study_id: int, key: str) -> Any: ...
+    def set_study_system_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_study_user_attrs(self, study_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_system_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
+    def set_trial_user_attrs(self, trial_id: int, attrs: dict[str, Any]) -> None: ...
     def set_trial_intermediate_value(
         self, trial_id: int, step: int, intermediate_value: float
     ) -> None: ...

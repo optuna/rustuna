@@ -39,7 +39,7 @@ fn rustuna(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<storage::to_rust::PyToRustStorage>()?;
     // sampler
     m.add_class::<sampler::tpe::PyTpeSampler>()?;
-    m.add_class::<sampler::nsgaii::PyNSGAIISampler>()?;
+    m.add_class::<sampler::nsgaii::PyNsgaiiSampler>()?;
     m.add_class::<sampler::PySamplerContext>()?;
     m.add_class::<sampler::cmaes::PyCmaEsSampler>()?;
     m.add_class::<sampler::random::PyRandomSampler>()?;

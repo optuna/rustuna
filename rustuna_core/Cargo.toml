@@ -12,6 +12,7 @@ readme = "README.md"
 [dependencies]
 rand = { workspace = true }
 rand_distr = "0.4.3"
+serde_json = "1.0"
 
 # wasm32-unknown-unknown has no clock of its own, so the host's is read through `Date.now()`.
 # Being target-gated, no other target gains a dependency: the Python extension and native Rust

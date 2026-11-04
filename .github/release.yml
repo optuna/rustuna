@@ -1,0 +1,83 @@
+changelog:
+  categories:
+    # Categories are ordered by priority. Exclusions keep a PR with several
+    # area labels in only its highest-priority category.
+    - title: Rustuna Core
+      labels:
+        - rustuna_core
+    - title: Rustuna Samplers
+      labels:
+        - rustuna_sampler
+      exclude:
+        labels:
+          - rustuna_core
+    - title: Rustuna Storage
+      labels:
+        - rustuna_storage
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+    - title: Importance Evaluation
+      labels:
+        - rustuna_importance
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+          - rustuna_storage
+    - title: Python API
+      labels:
+        - python
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+          - rustuna_storage
+          - rustuna_importance
+    - title: JavaScript API
+      labels:
+        - javascript
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+          - rustuna_storage
+          - rustuna_importance
+          - python
+    - title: Documentation
+      labels:
+        - docs
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+          - rustuna_storage
+          - rustuna_importance
+          - python
+          - javascript
+    - title: Development & CI
+      labels:
+        - ci
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+          - rustuna_storage
+          - rustuna_importance
+          - python
+          - javascript
+          - docs
+    - title: Other Changes
+      labels:
+        - '*'
+      exclude:
+        labels:
+          - rustuna_core
+          - rustuna_sampler
+          - rustuna_storage
+          - rustuna_importance
+          - python
+          - javascript
+          - docs
+          - ci

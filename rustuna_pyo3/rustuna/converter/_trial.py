@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import datetime
 import warnings
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING
 
 import optuna
 from optuna import distributions
@@ -11,7 +11,7 @@ from optuna.trial import FrozenTrial
 
 import rustuna
 
-from ._attrs import to_optuna_attrs, to_rustuna_attrs
+from ._attrs import to_optuna_trial_system_attrs, to_rustuna_trial_system_attrs
 from ._distribution import (
     to_optuna_distributions,
     to_rustuna_distribution,
@@ -64,7 +64,7 @@ def to_persisted_trial(
     study_id: int,
 ) -> rustuna.trial.PersistedTrial:
     """Convert an Optuna frozen trial to a Rustuna persisted trial."""
-    rustuna_system_attrs = to_rustuna_attrs(trial.system_attrs)
+    rustuna_system_attrs = to_rustuna_trial_system_attrs(trial.system_attrs)
 
     distributions: dict[str, Distribution] = {}
     for param_name in trial.distributions:
@@ -80,7 +80,7 @@ def to_persisted_trial(
         params=trial.params,
         distributions=distributions,
         intermediate_values=trial.intermediate_values,
-        user_attrs=to_rustuna_attrs(trial.user_attrs),
+        user_attrs=dict(trial.user_attrs),
         system_attrs=rustuna_system_attrs,
         datetime_start=trial.datetime_start,
         datetime_complete=trial.datetime_complete,
@@ -133,7 +133,7 @@ class FrozenTrialLike(FrozenTrial):
 
     @property
     def _trial_id(self) -> int:
-        return self._persisted_trial._trial_id
+        return self.__trial_id
 
     @_trial_id.setter
     def _trial_id(self, value: int) -> None:
@@ -242,7 +242,7 @@ class FrozenTrialLike(FrozenTrial):
             return self.__user_attrs
 
         user_attrs = self._persisted_trial.user_attrs
-        self.__user_attrs = to_optuna_attrs(dict(user_attrs))
+        self.__user_attrs = dict(user_attrs)
         return self.__user_attrs
 
     @user_attrs.setter
@@ -255,7 +255,7 @@ class FrozenTrialLike(FrozenTrial):
             return self.__system_attrs
 
         system_attrs = self._persisted_trial.system_attrs
-        self.__system_attrs = to_optuna_attrs(dict(system_attrs))
+        self.__system_attrs = to_optuna_trial_system_attrs(dict(system_attrs))
         return self.__system_attrs
 
     @system_attrs.setter

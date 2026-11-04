@@ -56,13 +56,9 @@ impl StudyCache {
             if let TrialStateValues::Complete(_) = trial.state_values {
                 match self.joint_search_space {
                     Some(ref mut search_space) => {
-                        let mut joint_space = HashMap::new();
-                        for (name, distribution) in search_space.iter() {
-                            if trial.distributions.get(name) == Some(distribution) {
-                                joint_space.insert(name.clone(), distribution.clone());
-                            }
-                        }
-                        *search_space = joint_space;
+                        search_space.retain(|name, distribution| {
+                            trial.distributions.get(name) == Some(distribution)
+                        });
                     }
                     None => {
                         self.joint_search_space = Some(trial.distributions.clone());

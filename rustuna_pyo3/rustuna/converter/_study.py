@@ -8,7 +8,6 @@ from optuna import Study as _OptunaStudy
 
 import rustuna
 
-from ._attrs import to_optuna_attrs
 from ._storage import ToOptunaStorage
 from ._trial import (
     to_frozen_trial,
@@ -70,4 +69,4 @@ class ToOptunaStudy(_OptunaStudy):
 
     @property
     def user_attrs(self) -> dict[str, Any]:
-        return to_optuna_attrs(self._rustuna_study.user_attrs)
+        return self._rustuna_study.user_attrs

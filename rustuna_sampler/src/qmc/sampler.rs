@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use rustuna_core::attr::{AttrKey, Attrs};
+use rustuna_core::attr::{json_to_plain, AttrKey, Attrs};
 use rustuna_core::distribution::Distribution;
 use rustuna_core::sampler::{Context, RandomSampler, Sampler};
 use rustuna_core::storage::Storage;
@@ -237,7 +237,7 @@ fn next_sample_id(
 
     let sample_id = match guard.get_study_attr(ctx.study_id, key.clone()) {
         Ok(value) => {
-            value.parse::<u64>().map_err(|e| {
+            json_to_plain(&value).parse::<u64>().map_err(|e| {
                 Error::with_reason(
                     ErrorKind::SamplerError,
                     format!("Failed to parse the stored sequence index {value:?}: {e}"),
@@ -247,11 +247,8 @@ fn next_sample_id(
         Err(e) if matches!(e.kind, ErrorKind::AttrNotFound) => 0,
         Err(e) => return Err(e),
     };
-    guard.set_study_attrs(
-        ctx.study_id,
-        Attrs::from([(key, sample_id.to_string())]),
-        false,
-    )?;
+    let value = guard.attr_format().encode_plain(sample_id.to_string());
+    guard.set_study_attrs(ctx.study_id, Attrs::from([(key, value)]), false)?;
     Ok(sample_id)
 }
 

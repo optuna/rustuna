@@ -209,16 +209,12 @@ study.optimize(objective, n_trials=10)
         Distribution::new_categorical(4)
     );
     assert_eq!(trials[0].as_ref().unwrap().internal_params.len(), 3);
-    let user_attrs_count = trials[0]
-        .as_ref()
-        .unwrap()
-        .attrs
-        .keys()
-        .filter(|k| matches!(k, rustuna_core::attr::AttrKey::User(_)))
-        .count();
-    // Rustuna intentionally ignores Optuna's JSON-encoded `user_attr` field.
-    // Only Rustuna's string-only `user_attr_str` field is restored.
-    assert_eq!(user_attrs_count, 0);
+    // Optuna's JSON-encoded `user_attr` fields are restored. The default (plain) format unquotes
+    // JSON strings and keeps other values as JSON texts.
+    let attrs = &trials[0].as_ref().unwrap().attrs;
+    let user_attr = |key: &str| attrs.get(&rustuna_core::attr::AttrKey::User(key.into()));
+    assert_eq!(user_attr("str_key"), Some(&"value".to_string()));
+    assert_eq!(user_attr("int_key"), Some(&"1".to_string()));
     assert!(matches!(
         trials[0].as_ref().unwrap().state_values,
         TrialStateValues::Complete(_)

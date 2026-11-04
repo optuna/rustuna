@@ -3,16 +3,18 @@ use std::sync::{Arc, RwLock};
 
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyString};
+use pyo3::types::PyDict;
 use rustuna_core::attr::{
-    category_labels_to_attrs, get_category_labels, AttrKey, Attrs, CategoryLabel,
+    category_labels_to_attrs, get_category_labels, AttrFormat, AttrKey, Attrs, CategoryLabel,
 };
 use rustuna_core::distribution::Distribution;
 use rustuna_core::storage::Storage;
 use rustuna_core::trial::{PersistedTrial, Trial, TrialState, TrialStateValues};
-use rustuna_core::ErrorKind;
 
-use crate::attrs::{pyobj_to_attrs, AttrKind, AttrsDictView};
+use crate::attrs::{
+    decode_attr_value, encode_attr_value, pyobj_to_attrs, pyobj_to_attrs_with_kind, AttrKind,
+    AttrsDictView,
+};
 use crate::distribution::{
     category_label_to_pyobject, py_to_external_repr, pyobject_to_category_label, PyDistribution,
 };
@@ -70,18 +72,19 @@ fn internal_param_from_py(obj: &Bound<'_, PyAny>, distribution: &PyDistribution)
     .map_err(|e| PyValueError::new_err(format!("Failed to convert parameter value: {e}")))
 }
 
+/// Converts the user and system attributes passed from Python into JSON texts.
 fn build_trial_attrs(
-    user_attrs: HashMap<String, String>,
-    system_attrs: HashMap<String, String>,
-) -> Attrs {
-    let mut trial_attrs = Attrs::with_capacity(user_attrs.len() + system_attrs.len());
-    for (key, value) in user_attrs {
-        trial_attrs.insert(AttrKey::User(key.into()), value);
+    user_attrs: Option<&Bound<'_, PyAny>>,
+    system_attrs: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Attrs> {
+    let mut trial_attrs = Attrs::new();
+    if let Some(user_attrs) = user_attrs {
+        trial_attrs.extend(pyobj_to_attrs_with_kind(user_attrs, AttrKind::User)?);
     }
-    for (key, value) in system_attrs {
-        trial_attrs.insert(AttrKey::System(key.into()), value);
+    if let Some(system_attrs) = system_attrs {
+        trial_attrs.extend(pyobj_to_attrs_with_kind(system_attrs, AttrKind::System)?);
     }
-    trial_attrs
+    Ok(trial_attrs)
 }
 
 fn build_params(
@@ -112,7 +115,7 @@ fn study_attrs_from_distributions(distributions: &HashMap<String, PyDistribution
     let mut attrs = Attrs::new();
     for (name, distribution) in distributions {
         if let Some(labels) = &distribution.category_labels {
-            attrs.extend(category_labels_to_attrs(name, labels));
+            attrs.extend(category_labels_to_attrs(name, labels, AttrFormat::Json));
         }
     }
     attrs
@@ -140,8 +143,8 @@ pub fn py_create_trial(
     values: Option<Vec<f64>>,
     params: Option<&Bound<'_, PyDict>>,
     distributions: Option<HashMap<String, PyDistribution>>,
-    user_attrs: Option<HashMap<String, String>>,
-    system_attrs: Option<HashMap<String, String>>,
+    user_attrs: Option<&Bound<'_, PyAny>>,
+    system_attrs: Option<&Bound<'_, PyAny>>,
     intermediate_values: Option<HashMap<u32, f64>>,
 ) -> PyResult<PyPersistedTrial> {
     let mut trial = PersistedTrial::new(0, 0, 0);
@@ -155,10 +158,7 @@ pub fn py_create_trial(
         .map(|(name, distribution)| (name, distribution.distribution))
         .collect();
     trial.intermediate_values = intermediate_values.unwrap_or_default();
-    trial.attrs = build_trial_attrs(
-        user_attrs.unwrap_or_default(),
-        system_attrs.unwrap_or_default(),
-    );
+    trial.attrs = build_trial_attrs(user_attrs, system_attrs)?;
 
     let now = rustuna_core::internal::datetime::now_naive_utc();
     if matches!(state, PyTrialState::WAITING) {
@@ -357,15 +357,22 @@ impl PyTrial {
         category_label_to_pyobject(py, &label).map(|b| b.unbind())
     }
     #[pyo3(signature = (key, value))]
-    pub fn set_user_attr(&mut self, key: &str, value: String) -> PyResult<()> {
+    pub fn set_user_attr(&mut self, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+        let value = encode_attr_value(value)?;
         self.trial.set_user_attr(key, value).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to set user attr: {:?}", e.kind))
         })?;
         Ok(())
     }
 
-    fn set_user_attrs(&mut self, attrs: Py<PyAny>) -> PyResult<()> {
-        let user_attrs: HashMap<String, String> = Python::attach(|py| attrs.bind(py).extract())?;
+    fn set_user_attrs(&mut self, attrs: &Bound<'_, PyAny>) -> PyResult<()> {
+        let user_attrs: HashMap<String, String> = pyobj_to_attrs_with_kind(attrs, AttrKind::User)?
+            .into_iter()
+            .filter_map(|(key, value)| match key {
+                AttrKey::User(k) => Some((k.to_string(), value)),
+                AttrKey::System(_) => None,
+            })
+            .collect();
 
         self.trial.set_user_attrs(user_attrs).map_err(|e| {
             PyRuntimeError::new_err(format!("Failed to set user attrs: {:?}", e.kind))
@@ -394,8 +401,12 @@ impl PyTrial {
     }
 
     #[getter]
-    pub fn user_attrs(&self) -> PyResult<HashMap<String, String>> {
-        Ok(self.trial.get_user_attrs())
+    pub fn user_attrs(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let dict = PyDict::new(py);
+        for (key, value) in self.trial.get_user_attrs() {
+            dict.set_item(key, decode_attr_value(py, &value)?)?;
+        }
+        Ok(dict.unbind())
     }
 }
 
@@ -452,6 +463,11 @@ impl PyPersistedTrial {
             },
             study_attrs: None,
         }
+    }
+
+    /// Returns a copy of the trial, e.g. to pass it to a storage as a template.
+    pub fn to_persisted_trial(&self) -> PyResult<PersistedTrial> {
+        self.with_trial(|t| Ok(t.clone()))
     }
 
     pub fn with_trial<R>(&self, f: impl FnOnce(&PersistedTrial) -> PyResult<R>) -> PyResult<R> {
@@ -534,8 +550,8 @@ impl PyPersistedTrial {
         values: Option<Vec<f64>>,
         params: Option<&Bound<'_, PyDict>>,
         distributions: Option<HashMap<String, PyDistribution>>,
-        user_attrs: Option<HashMap<String, String>>,
-        system_attrs: Option<HashMap<String, String>>,
+        user_attrs: Option<&Bound<'_, PyAny>>,
+        system_attrs: Option<&Bound<'_, PyAny>>,
         intermediate_values: Option<HashMap<u32, f64>>,
         datetime_start: Option<Bound<'_, PyAny>>,
         datetime_complete: Option<Bound<'_, PyAny>>,
@@ -551,10 +567,7 @@ impl PyPersistedTrial {
             .map(|(name, dist)| (name, dist.distribution))
             .collect();
         trial.intermediate_values = intermediate_values.unwrap_or_default();
-        trial.attrs = build_trial_attrs(
-            user_attrs.unwrap_or_default(),
-            system_attrs.unwrap_or_default(),
-        );
+        trial.attrs = build_trial_attrs(user_attrs, system_attrs)?;
         trial.datetime_start = datetime_start
             .as_ref()
             .map(py_datetime_to_naive_utc)
@@ -736,50 +749,6 @@ impl PyPersistedTrial {
         }
     }
 
-    #[pyo3(name = "get_user_attr", signature = (key, *, decoder = None, default = None))]
-    pub fn get_user_attr<'py>(
-        &self,
-        py: Python<'py>,
-        key: String,
-        decoder: Option<Py<PyAny>>,
-        default: Option<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let result = match &self.source {
-            PyPersistedTrialSource::Owned(trial) => trial
-                .attrs
-                .get(&AttrKey::User(key.into()))
-                .cloned()
-                .ok_or(rustuna_core::Error::new(ErrorKind::AttrNotFound)),
-            PyPersistedTrialSource::StorageBacked {
-                storage, trial_id, ..
-            } => {
-                let guard = storage.read().map_err(|e| {
-                    PyRuntimeError::new_err(format!("Failed to acquire the storage guard: {e:?}"))
-                })?;
-                guard.get_cached_trial(*trial_id).and_then(|trial| {
-                    trial
-                        .attrs
-                        .get(&AttrKey::User(key.into()))
-                        .cloned()
-                        .ok_or(rustuna_core::Error::new(ErrorKind::AttrNotFound))
-                })
-            }
-        };
-        match result {
-            Ok(value) => match decoder {
-                Some(decoder) => {
-                    let decoded = decoder.call1(py, (&value,))?;
-                    Ok(decoded)
-                }
-                None => Ok(PyString::new(py, &value).into_any().unbind()),
-            },
-            Err(e) if matches!(e.kind, ErrorKind::AttrNotFound) => {
-                Ok(default.unwrap_or_else(|| py.None()))
-            }
-            Err(e) => Err(err_to_exceptions(e)),
-        }
-    }
-
     fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
         let type_obj = slf.get_type();
         let class_name = type_obj.name()?.to_string_lossy().into_owned();
@@ -868,6 +837,8 @@ fn py_datetime_to_naive_utc(value: &Bound<'_, PyAny>) -> PyResult<String> {
         .extract()
 }
 
+/// Converts a trial returned by a Python storage. Its attribute values are JSON-serializable
+/// objects; see [`pyobj_to_attrs`].
 pub fn pyobject_to_persisted_trial_with_category_labels(
     trial: &Bound<'_, PyAny>,
     study_id: u32,
@@ -942,7 +913,7 @@ pub fn pyobject_to_persisted_trial_with_category_labels(
         let key = key.extract::<String>()?;
         let value = value.extract::<PyDistribution>()?;
         if let Some(labels) = &value.category_labels {
-            category_attrs.extend(category_labels_to_attrs(&key, labels));
+            category_attrs.extend(category_labels_to_attrs(&key, labels, AttrFormat::Json));
         }
         distributions.insert(key, value.into());
     }

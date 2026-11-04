@@ -7,7 +7,7 @@ use pyo3::Py;
 
 use rustuna_core::sampler::Sampler;
 use rustuna_core::trial::TrialStateValues;
-use rustuna_sampler::nsgaii::NSGAIISampler;
+use rustuna_sampler::nsgaii::{NsgaiiBuilder, NsgaiiSampler};
 
 use crate::distribution::PyDistribution;
 use crate::sampler::{extract_storage, PySamplerContext};
@@ -16,11 +16,11 @@ use crate::trial::PyTrialState;
 #[derive(Clone)]
 #[pyclass(name = "NSGAIISampler", from_py_object)]
 #[pyo3(module = "rustuna")]
-pub struct PyNSGAIISampler {
-    pub sampler: Arc<NSGAIISampler>,
+pub struct PyNsgaiiSampler {
+    pub sampler: Arc<NsgaiiSampler>,
 }
 #[pymethods]
-impl PyNSGAIISampler {
+impl PyNsgaiiSampler {
     #[new]
     #[pyo3(signature = (*, seed = None, population_size = 50, mutation_prob = None, crossover_prob = 0.9, swapping_prob = 0.5))]
     fn py_new(
@@ -30,22 +30,18 @@ impl PyNSGAIISampler {
         crossover_prob: f64,
         swapping_prob: f64,
     ) -> PyResult<Self> {
-        let rs_sampler = match seed {
-            Some(seed) => NSGAIISampler::seed_from_u64(
-                seed,
-                population_size,
-                mutation_prob,
-                crossover_prob,
-                swapping_prob,
-            ),
-            None => NSGAIISampler::new(
-                population_size,
-                mutation_prob,
-                crossover_prob,
-                swapping_prob,
-            ),
-        };
-        Ok(PyNSGAIISampler {
+        let mut builder = NsgaiiBuilder::new()
+            .population_size(population_size)
+            .crossover_prob(crossover_prob)
+            .swapping_prob(swapping_prob);
+        if let Some(seed) = seed {
+            builder = builder.seed(seed);
+        }
+        if let Some(mutation_prob) = mutation_prob {
+            builder = builder.mutation_prob(mutation_prob);
+        }
+        let rs_sampler = builder.build();
+        Ok(PyNsgaiiSampler {
             sampler: Arc::new(rs_sampler),
         })
     }

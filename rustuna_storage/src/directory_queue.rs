@@ -76,7 +76,7 @@ impl DirectoryTrialQueue {
 }
 
 impl TrialQueue for DirectoryTrialQueue {
-    fn enqueue(&mut self, trial_id: u32) -> Result<()> {
+    fn enqueue(&self, trial_id: u32) -> Result<()> {
         loop {
             let filename = Self::trial_id_to_filename(trial_id);
             let target_path = self.pending_dir.join(filename);
@@ -97,7 +97,7 @@ impl TrialQueue for DirectoryTrialQueue {
         }
     }
 
-    fn dequeue(&mut self) -> Result<u32> {
+    fn dequeue(&self) -> Result<u32> {
         // Read all entries from pending directory and sort by filename
         let mut entries: Vec<_> = fs::read_dir(&self.pending_dir)
             .map_err(|e| {
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn test_enqueue_and_dequeue() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
+        let queue = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
 
         queue.enqueue(1).unwrap();
         queue.enqueue(2).unwrap();
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_dequeue_empty_queue() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
+        let queue = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
 
         assert!(queue.dequeue().is_err());
     }
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn test_fifo_order() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
+        let queue = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
 
         // Push in non-sequential order
         queue.enqueue(5).unwrap();
@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn test_multiple_queues_same_directory() {
         let temp_dir = TempDir::new().unwrap();
-        let mut queue1 = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
-        let mut queue2 = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
+        let queue1 = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
+        let queue2 = DirectoryTrialQueue::new(temp_dir.path()).unwrap();
 
         queue1.enqueue(1).unwrap();
         queue1.enqueue(2).unwrap();

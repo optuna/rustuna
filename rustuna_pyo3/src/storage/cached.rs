@@ -4,7 +4,7 @@ use std::sync::{Arc, RwLock};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use rustuna_core::attr::{get_category_labels, AttrKey, Attrs, CategoryLabel};
+use rustuna_core::attr::{get_category_labels, AttrFormat, AttrKey, Attrs, CategoryLabel};
 use rustuna_core::distribution::Distribution;
 use rustuna_core::storage::Storage;
 use rustuna_core::study::{Direction, PersistedStudy};
@@ -12,6 +12,7 @@ use rustuna_core::trial::{PersistedTrial, TrialStateValues};
 use rustuna_core::{Error, ErrorKind};
 use rustuna_storage::cache::{CachedStorage, CachedStorageBackend, DiscardedTrialsDiff};
 
+use crate::attrs::{decode_attr_value, encode_attr_value};
 use crate::distribution::pyobject_to_category_label;
 use crate::distribution::PyDistribution;
 use crate::storage::binding::StorageBinding;
@@ -20,6 +21,7 @@ use crate::trial::{
     pyobject_to_persisted_trial_with_category_labels, PyPersistedTrial, PyTrialState,
 };
 
+/// Adapts a `CachedStorageBackend` implemented in Python.
 pub(crate) struct PyCachedStorageBackend {
     obj: Py<PyAny>,
 }
@@ -125,8 +127,12 @@ impl PyCachedStorageBackend {
         let system_attrs = PyDict::new(py);
         for (key, value) in attrs {
             match key {
-                AttrKey::User(key) => user_attrs.set_item(key.as_str(), value)?,
-                AttrKey::System(key) => system_attrs.set_item(key.as_str(), value)?,
+                AttrKey::User(key) => {
+                    user_attrs.set_item(key.as_str(), decode_attr_value(py, value)?)?
+                }
+                AttrKey::System(key) => {
+                    system_attrs.set_item(key.as_str(), decode_attr_value(py, value)?)?
+                }
             }
         }
         if !user_attrs.is_empty() {
@@ -301,11 +307,11 @@ impl CachedStorageBackend for PyCachedStorageBackend {
                 AttrKey::System(key) => ("get_study_system_attr", "system_attrs", key.to_string()),
             };
             if let Ok(method) = self.obj.getattr(py, method_name) {
-                return method.bind(py).call1((study_id, key))?.extract();
+                return encode_attr_value(&method.bind(py).call1((study_id, key))?);
             }
             let study = self.obj.call_method1(py, "get_study", (study_id,))?;
             let study = study.bind(py);
-            study.getattr(attrs_name)?.get_item(key.as_str())?.extract()
+            encode_attr_value(&study.getattr(attrs_name)?.get_item(key.as_str())?)
         })
         .map_err(Self::map_pyerr)
     }
@@ -328,6 +334,10 @@ impl CachedStorageBackend for PyCachedStorageBackend {
     ) -> rustuna_core::Result<()> {
         Python::attach(|py| self.call_set_attrs(py, "set_trial_attrs", trial_id, &attrs))
             .map_err(Self::map_pyerr)
+    }
+
+    fn attr_format(&self) -> AttrFormat {
+        AttrFormat::Json
     }
 
     fn apply_discard(&self) -> bool {
@@ -539,7 +549,12 @@ impl PyCachedStorage {
         self.binding.get_trial_number_from_id(py, trial_id)
     }
 
-    fn get_study_user_attr(&self, py: Python<'_>, study_id: u32, key: String) -> PyResult<String> {
+    fn get_study_user_attr(
+        &self,
+        py: Python<'_>,
+        study_id: u32,
+        key: String,
+    ) -> PyResult<Py<PyAny>> {
         self.binding.get_study_user_attr(py, study_id, key)
     }
 
@@ -548,7 +563,7 @@ impl PyCachedStorage {
         py: Python<'_>,
         study_id: u32,
         key: String,
-    ) -> PyResult<String> {
+    ) -> PyResult<Py<PyAny>> {
         self.binding.get_study_system_attr(py, study_id, key)
     }
 

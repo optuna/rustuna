@@ -8,7 +8,7 @@ mod tests {
 
     use rustuna_core::storage::InMemoryStorage;
     use rustuna_core::study::{create_study, Direction};
-    use rustuna_sampler::nsgaii::NSGAIISampler;
+    use rustuna_sampler::nsgaii::NsgaiiSampler;
 
     #[bench]
     fn bench_nsgaii(b: &mut Bencher) {
@@ -16,7 +16,7 @@ mod tests {
             let directions = vec![Direction::Minimize, Direction::Minimize];
             let storage = InMemoryStorage::new();
             let study =
-                create_study("dummy", storage, NSGAIISampler::default(), directions).unwrap();
+                create_study("dummy", storage, NsgaiiSampler::default(), directions).unwrap();
             study
                 .optimize(
                     |mut t| {
