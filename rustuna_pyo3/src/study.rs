@@ -41,7 +41,7 @@ use crate::trial_queue::to_rust::ToRustTrialQueue;
 
 type SharedStorage = Arc<RwLock<dyn Storage>>;
 type SharedSampler = Arc<dyn Sampler>;
-type SharedTrialQueue = Arc<RwLock<dyn rustuna_core::trial_queue::TrialQueue>>;
+type SharedTrialQueue = Arc<dyn rustuna_core::trial_queue::TrialQueue>;
 
 mod py_exceptions {
     pyo3::import_exception!(rustuna.exceptions, TrialPruned);
@@ -173,9 +173,8 @@ fn into_trial_queue_pyobj(
                     trial_queue.clone_ref(py),
                 ))
             } else {
-                let queue: SharedTrialQueue = Arc::new(RwLock::new(ToRustTrialQueue::new(
-                    trial_queue.clone_ref(py),
-                )));
+                let queue: SharedTrialQueue =
+                    Arc::new(ToRustTrialQueue::new(trial_queue.clone_ref(py)));
                 Ok((queue, trial_queue.clone_ref(py)))
             }
         }

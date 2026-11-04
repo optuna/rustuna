@@ -19,7 +19,7 @@ pub fn create_study<S: Storage + Send + Sync + 'static, T: Sampler + 'static>(
     let study_id = storage.create_new_study(study_name, directions.clone())?.id;
     let storage = Arc::new(RwLock::new(storage));
     let sampler: Arc<dyn Sampler> = Arc::new(sampler);
-    let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+    let queue = Arc::new(InMemoryTrialQueue::new());
     Ok(Study::new(
         study_id,
         study_name.to_string(),
@@ -45,7 +45,7 @@ pub fn create_study_with_arc(
     })?;
     let study_id = guard.create_new_study(study_name, directions.clone())?.id;
     drop(guard);
-    let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+    let queue = Arc::new(InMemoryTrialQueue::new());
     Ok(Study::new(
         study_id,
         study_name.to_string(),
@@ -70,7 +70,7 @@ pub struct Study {
     pub directions: Vec<Direction>,
     pub storage: Arc<RwLock<dyn Storage>>,
     pub sampler: Arc<dyn Sampler>,
-    pub queue: Arc<RwLock<dyn TrialQueue>>,
+    pub queue: Arc<dyn TrialQueue>,
 }
 impl Study {
     /// Constructs a study from fully initialized components.
@@ -80,7 +80,7 @@ impl Study {
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
         sampler: Arc<dyn Sampler>,
-        queue: Arc<RwLock<dyn TrialQueue>>,
+        queue: Arc<dyn TrialQueue>,
     ) -> Self {
         Study {
             id,
@@ -108,7 +108,7 @@ impl Study {
         let name = study.name.clone();
         let directions = study.directions.clone();
         drop(guard);
-        let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+        let queue = Arc::new(InMemoryTrialQueue::new());
         Ok(Study::new(id, name, directions, storage, sampler, queue))
     }
 
@@ -132,7 +132,7 @@ impl Study {
         let study_id = study.id;
         let directions = study.directions.clone();
         drop(guard);
-        let queue = Arc::new(RwLock::new(InMemoryTrialQueue::new()));
+        let queue = Arc::new(InMemoryTrialQueue::new());
         Ok(Study::new(
             study_id, name, directions, storage, sampler, queue,
         ))
@@ -141,13 +141,7 @@ impl Study {
     /// Creates or dequeues the next trial to evaluate.
     pub fn ask(&self) -> Result<Trial> {
         let queued_trial_id = {
-            let mut queue_guard = self.queue.write().map_err(|e| {
-                Error::with_reason(
-                    ErrorKind::Unexpected,
-                    format!("Failed to acquire a queue guard: {e}"),
-                )
-            })?;
-            match queue_guard.dequeue() {
+            match self.queue.dequeue() {
                 Ok(trial_id) => Some(trial_id),
                 Err(error) if matches!(error.kind, ErrorKind::TrialQueueEmpty) => None,
                 Err(error) => return Err(error),
@@ -167,8 +161,7 @@ impl Study {
                 Ok(trial) => trial,
                 Err(e) => {
                     // Push the trial_id back to the queue on storage error
-                    let mut queue_guard = self.queue.write().expect("queue lock poisoned");
-                    if let Err(queue_err) = queue_guard.enqueue(trial_id) {
+                    if let Err(queue_err) = self.queue.enqueue(trial_id) {
                         return Err(Error::with_reason(
                                 ErrorKind::Unexpected,
                                 format!(
@@ -408,14 +401,7 @@ impl Study {
         let trial_id = trial.id;
         drop(guard);
 
-        let mut queue_guard = self.queue.write().map_err(|e| {
-            Error::with_reason(
-                ErrorKind::Unexpected,
-                format!("Failed to acquire a queue guard: {e}"),
-            )
-        })?;
-        queue_guard.enqueue(trial_id)?;
-
+        self.queue.enqueue(trial_id)?;
         Ok(())
     }
 }
