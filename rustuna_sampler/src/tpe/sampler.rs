@@ -1557,11 +1557,9 @@ mod tests {
 
     #[test]
     fn study_columns_preserve_pending_trials_constraints_and_immutable_snapshots() {
-        let mut storage =
-            InMemoryStorage::new_with_option(rustuna_core::storage::InMemoryStorageOptions {
-                apply_discard: true,
-                ..Default::default()
-            });
+        let mut storage = rustuna_core::storage::InMemoryStorageBuilder::new()
+            .apply_discard(true)
+            .build();
         let study_id = storage
             .create_new_study("history", vec![Direction::Minimize; 2])
             .unwrap()

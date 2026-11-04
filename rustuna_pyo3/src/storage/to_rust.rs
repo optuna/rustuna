@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustuna_core::attr::{AttrFormat, AttrKey, Attrs, CategoryLabel};
 use rustuna_core::distribution::Distribution;
-use rustuna_core::storage::{InMemoryStorage, InMemoryStorageOptions, Storage};
+use rustuna_core::storage::{InMemoryStorage, InMemoryStorageBuilder, Storage};
 use rustuna_core::study::{Direction, PersistedStudy};
 use rustuna_core::trial::{PersistedTrial, TrialState, TrialStateValues};
 use rustuna_core::{Error, ErrorKind};
@@ -38,10 +38,9 @@ impl ToRustStorage {
     pub fn new(obj: Py<PyAny>) -> Self {
         ToRustStorage {
             obj,
-            cache: InMemoryStorage::new_with_option(InMemoryStorageOptions {
-                attr_format: AttrFormat::Json,
-                ..Default::default()
-            }),
+            cache: InMemoryStorageBuilder::new()
+                .attr_format(AttrFormat::Json)
+                .build(),
             cache_study_to_src_study: HashMap::new(),
             src_study_to_cache_study: HashMap::new(),
         }

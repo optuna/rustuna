@@ -20,20 +20,6 @@ use rustuna_core::{Error, ErrorKind, Result};
 use super::{JournalBackend, JournalLog, JournalOperation};
 use crate::datetime::{journal_datetime_to_naive_utc, naive_utc_to_aware_utc, now_aware_utc};
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-/// Options for [`JournalStorage`].
-pub struct JournalStorageOptions {
-    /// If `true`, discarded trials are omitted when replaying the journal.
-    /// Discard logs are written regardless of this option.
-    pub apply_discard: bool,
-    /// Representation of attribute values.
-    ///
-    /// With [`AttrFormat::Json`], user and system attributes are written in Optuna's schema
-    /// (one `user_attr` / `system_attr` log per key with the raw JSON value), so Optuna can
-    /// read them. Logs written in either format are readable in both formats.
-    pub attr_format: AttrFormat,
-}
-
 /// Storage implementation backed by an append-only journal log.
 ///
 /// Similar in spirit to Optuna's `JournalStorage`, this storage writes every state-changing
@@ -43,28 +29,84 @@ pub struct JournalStorage {
     replay: JournalReplayState,
 }
 
-impl JournalStorage {
-    /// Creates a journal storage and synchronizes its in-memory replay state from the backend.
-    pub fn new(backend: Box<dyn JournalBackend>) -> Result<Self> {
-        Self::new_with_options(backend, JournalStorageOptions::default())
+/// Builder for [`JournalStorage`], following the API style of [`std::thread::Builder`].
+///
+/// Settings are configured by chaining setter methods and the storage is created with
+/// [`JournalStorageBuilder::build`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use rustuna_storage::journal::file::JournalFileBackend;
+/// use rustuna_storage::journal::storage::JournalStorageBuilder;
+///
+/// # fn main() -> rustuna_core::Result<()> {
+/// let path = std::env::temp_dir().join("journal.log");
+/// let backend = JournalFileBackend::new(&path, None)?;
+/// let storage = JournalStorageBuilder::new(Box::new(backend))
+///     .apply_discard(true)
+///     .build()?;
+/// # let _ = storage;
+/// # Ok(())
+/// # }
+/// ```
+pub struct JournalStorageBuilder {
+    backend: Box<dyn JournalBackend>,
+    apply_discard: bool,
+    attr_format: AttrFormat,
+}
+impl JournalStorageBuilder {
+    /// Creates a builder backed by `backend`.
+    pub fn new(backend: Box<dyn JournalBackend>) -> Self {
+        Self {
+            backend,
+            apply_discard: false,
+            attr_format: AttrFormat::default(),
+        }
     }
 
-    /// Creates a journal storage and synchronizes its in-memory replay state from the backend.
-    pub fn new_with_options(
-        backend: Box<dyn JournalBackend>,
-        options: JournalStorageOptions,
-    ) -> Result<Self> {
+    /// Sets whether discarded trials are omitted when replaying the journal.
+    ///
+    /// Discard logs are written regardless of this setting. Defaults to `false`.
+    pub fn apply_discard(self, apply_discard: bool) -> Self {
+        Self {
+            apply_discard,
+            ..self
+        }
+    }
+
+    /// Sets the representation of attribute values.
+    ///
+    /// With [`AttrFormat::Json`], user and system attributes are written in Optuna's schema
+    /// (one `user_attr` / `system_attr` log per key with the raw JSON value), so Optuna can
+    /// read them. Logs written in either format are readable in both formats. Defaults to
+    /// [`AttrFormat::Plain`].
+    pub fn attr_format(self, attr_format: AttrFormat) -> Self {
+        Self {
+            attr_format,
+            ..self
+        }
+    }
+
+    /// Builds the storage and synchronizes its in-memory replay state from the backend.
+    pub fn build(self) -> Result<JournalStorage> {
         let worker_id_prefix = format!("{}-{}-", unique_prefix(), std::process::id());
         let mut storage = JournalStorage {
-            backend,
-            replay: JournalReplayState::new(
-                worker_id_prefix,
-                options.apply_discard,
-                options.attr_format,
-            ),
+            backend: self.backend,
+            replay: JournalReplayState::new(worker_id_prefix, self.apply_discard, self.attr_format),
         };
         storage.sync_with_backend()?;
         Ok(storage)
+    }
+}
+
+impl JournalStorage {
+    /// Creates a journal storage with the default configuration and synchronizes its in-memory
+    /// replay state from the backend.
+    ///
+    /// Use [`JournalStorageBuilder`] to configure the storage.
+    pub fn new(backend: Box<dyn JournalBackend>) -> Result<Self> {
+        JournalStorageBuilder::new(backend).build()
     }
 
     fn worker_id(&self) -> String {
@@ -2453,13 +2495,9 @@ mod tests {
         }
 
         let backend = InMemoryJournalBackend { logs: logs.clone() };
-        let mut reloaded = JournalStorage::new_with_options(
-            Box::new(backend),
-            JournalStorageOptions {
-                apply_discard: true,
-                ..Default::default()
-            },
-        )?;
+        let mut reloaded = JournalStorageBuilder::new(Box::new(backend))
+            .apply_discard(true)
+            .build()?;
         let trials = reloaded.get_trials(study_id)?;
         assert!(trials[0].is_none());
         Ok(())
@@ -2574,13 +2612,9 @@ mod tests {
         storage.discard_trials(&[trial_id])?;
 
         let backend = InMemoryJournalBackend { logs: logs.clone() };
-        let mut storage2 = JournalStorage::new_with_options(
-            Box::new(backend),
-            JournalStorageOptions {
-                apply_discard: false,
-                ..Default::default()
-            },
-        )?;
+        let mut storage2 = JournalStorageBuilder::new(Box::new(backend))
+            .apply_discard(false)
+            .build()?;
         let trials = storage2.get_trials(study_id)?;
         assert_eq!(trials.len(), 1);
         assert_eq!(trials[0].as_ref().unwrap().id, trial_id);
@@ -2592,13 +2626,9 @@ mod tests {
     fn get_n_trials_counts_states_including_discarded_trials() -> Result<()> {
         let logs = Arc::new(Mutex::new(Vec::new()));
         let backend = InMemoryJournalBackend { logs };
-        let mut storage = JournalStorage::new_with_options(
-            Box::new(backend),
-            JournalStorageOptions {
-                apply_discard: true,
-                ..Default::default()
-            },
-        )?;
+        let mut storage = JournalStorageBuilder::new(Box::new(backend))
+            .apply_discard(true)
+            .build()?;
         let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
         let running_trial_id = storage.create_new_trial(study_id)?.id;
         let complete_trial_id = storage.create_new_trial(study_id)?.id;
@@ -2873,13 +2903,9 @@ mod tests {
         attr_format: AttrFormat,
     ) -> Result<JournalStorage> {
         let backend = InMemoryJournalBackend { logs: logs.clone() };
-        JournalStorage::new_with_options(
-            Box::new(backend),
-            JournalStorageOptions {
-                attr_format,
-                ..Default::default()
-            },
-        )
+        JournalStorageBuilder::new(Box::new(backend))
+            .attr_format(attr_format)
+            .build()
     }
 
     fn user_attr(trial: &PersistedTrial, key: &str) -> Option<String> {
