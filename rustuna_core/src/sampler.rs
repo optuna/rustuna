@@ -7,19 +7,33 @@ use crate::distribution::Distribution;
 use crate::storage::Storage;
 use crate::study::Direction;
 use crate::trial::TrialStateValues;
+use crate::trial_queue::TrialQueue;
 use crate::Result;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 /// Lightweight study and trial metadata passed to samplers.
 ///
 /// Rustuna does not pass full `Study` or `FrozenTrial` objects to samplers. Instead, it provides
-/// the identifiers and objective directions required to make sampling decisions, while richer
-/// state can be retrieved through [`Storage`] when necessary.
+/// the identifiers and objective directions required to make sampling decisions, the shared
+/// [`TrialQueue`] for queued trials, and access to richer state through [`Storage`] when necessary.
 pub struct Context {
     pub study_id: u32,
     pub directions: Vec<Direction>,
     pub trial_number: u32,
     pub trial_id: u32,
+    pub trial_queue: Arc<dyn TrialQueue>,
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("study_id", &self.study_id)
+            .field("directions", &self.directions)
+            .field("trial_number", &self.trial_number)
+            .field("trial_id", &self.trial_id)
+            .field("trial_queue", &"<TrialQueue>")
+            .finish()
+    }
 }
 
 /// Interface for parameter suggestion algorithms.
@@ -246,6 +260,7 @@ mod tests {
     use crate::storage::InMemoryStorage;
     use crate::study::create_study;
     use crate::trial::Trial;
+    use crate::trial_queue::InMemoryTrialQueue;
 
     pub struct DummyJointSampler {
         joint_params: HashMap<String, f64>,
@@ -294,12 +309,14 @@ mod tests {
     fn random_sampler_can_be_shared_between_threads() -> Result<()> {
         let sampler: Arc<dyn Sampler> = Arc::new(RandomSampler::seed_from_u64(0));
         let storage: Arc<RwLock<dyn Storage>> = Arc::new(RwLock::new(InMemoryStorage::new()));
+        let trial_queue: Arc<dyn TrialQueue> = Arc::new(InMemoryTrialQueue::new());
         let distribution = Distribution::new_float(-1.0, 1.0, None, false);
         let mut handles = Vec::new();
 
         for thread_id in 0..4 {
             let sampler = Arc::clone(&sampler);
             let storage = Arc::clone(&storage);
+            let trial_queue = Arc::clone(&trial_queue);
             let distribution = distribution.clone();
             handles.push(thread::spawn(move || -> Result<()> {
                 for trial_number in 0..100 {
@@ -308,6 +325,7 @@ mod tests {
                         directions: vec![Direction::Minimize],
                         trial_number,
                         trial_id: thread_id * 100 + trial_number,
+                        trial_queue: Arc::clone(&trial_queue),
                     };
                     let value = sampler.sample_independent(
                         &ctx,

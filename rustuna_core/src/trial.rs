@@ -9,6 +9,7 @@ use crate::distribution::Distribution;
 use crate::sampler::{Context as SamplerContext, Sampler};
 use crate::storage::Storage;
 use crate::study::Direction;
+use crate::trial_queue::TrialQueue;
 use crate::{Error, ErrorKind, Result};
 
 const CONSTRAINTS_KEY: &str = "constraints";
@@ -27,6 +28,7 @@ pub struct Trial {
     directions: Vec<Direction>,
     storage: Arc<RwLock<dyn Storage>>,
     sampler: Arc<dyn Sampler>,
+    trial_queue: Arc<dyn TrialQueue>,
     joint_params: HashMap<String, (Distribution, f64)>,
     fixed_params: HashMap<String, CategoryLabel>,
     cached_user_attrs: HashMap<String, String>,
@@ -38,6 +40,7 @@ impl Trial {
         directions: Vec<Direction>,
         storage: Arc<RwLock<dyn Storage>>,
         sampler: Arc<dyn Sampler>,
+        trial_queue: Arc<dyn TrialQueue>,
         joint_params: HashMap<String, (Distribution, f64)>,
     ) -> Self {
         let fixed_params = extract_fixed_params(&trial.attrs);
@@ -58,6 +61,7 @@ impl Trial {
             directions,
             storage,
             sampler,
+            trial_queue,
             joint_params,
             fixed_params,
             cached_user_attrs,
@@ -135,6 +139,7 @@ impl Trial {
             trial_number: self.number,
             trial_id: self.id,
             directions: self.directions.clone(),
+            trial_queue: Arc::clone(&self.trial_queue),
         };
         let param_value =
             self.sampler
