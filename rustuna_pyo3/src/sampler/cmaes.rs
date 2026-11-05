@@ -17,6 +17,7 @@ use super::{extract_storage, PySamplerContext};
 use crate::distribution::PyDistribution;
 use crate::exception::err_to_exceptions;
 use crate::trial::PyTrialState;
+use crate::trial_queue::extract_trial_queue;
 
 /// A CMA-ES sampler backed by Python's `cmaes` package.
 ///
@@ -229,11 +230,12 @@ impl Sampler for CmaEsSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         name: &str,
         distribution: &Distribution,
     ) -> Result<f64> {
         self.random_sampler
-            .sample_independent(ctx, storage, name, distribution)
+            .sample_independent(ctx, storage, trial_queue, name, distribution)
     }
 
     fn support_joint_sampling(&self) -> bool {
@@ -244,6 +246,7 @@ impl Sampler for CmaEsSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
         self.state
@@ -294,16 +297,18 @@ impl PyCmaEsSampler {
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
         name: &str,
         distribution: &PyDistribution,
     ) -> PyResult<f64> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let context = ctx.context.clone();
         let name = name.to_owned();
         let distribution = distribution.distribution.clone();
         py.detach(|| {
             self.sampler
-                .sample_independent(&context, arc_storage, &name, &distribution)
+                .sample_independent(&context, arc_storage, arc_trial_queue, &name, &distribution)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to sample independent: {e:?}"))
                 })
@@ -315,9 +320,11 @@ impl PyCmaEsSampler {
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
         search_space: HashMap<String, PyDistribution>,
     ) -> PyResult<HashMap<String, f64>> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let context = ctx.context.clone();
         let search_space = search_space
             .into_iter()
@@ -325,26 +332,33 @@ impl PyCmaEsSampler {
             .collect();
         py.detach(|| {
             self.sampler
-                .sample_joint(&context, arc_storage, &search_space)
+                .sample_joint(&context, arc_storage, arc_trial_queue, &search_space)
                 .map_err(err_to_exceptions)
         })
     }
 
-    fn before_trial(&self, ctx: &PySamplerContext, storage: Py<PyAny>) -> PyResult<()> {
-        let _ = (ctx, storage);
+    fn before_trial(
+        &self,
+        ctx: &PySamplerContext,
+        storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
+    ) -> PyResult<()> {
+        let _ = (ctx, storage, trial_queue);
         Ok(())
     }
 
-    #[pyo3(signature = (ctx, storage, state, values = None))]
+    #[pyo3(signature = (ctx, storage, trial_queue, state, values = None))]
     fn after_trial(
         &self,
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
         state: PyTrialState,
         values: Option<Vec<f64>>,
     ) -> PyResult<()> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let state_values = match state {
             PyTrialState::RUNNING => TrialStateValues::Running,
             PyTrialState::COMPLETE => TrialStateValues::Complete(values.ok_or(
@@ -357,7 +371,7 @@ impl PyCmaEsSampler {
         let context = ctx.context.clone();
         py.detach(|| {
             self.sampler
-                .after_trial(&context, arc_storage, &state_values)
+                .after_trial(&context, arc_storage, arc_trial_queue, &state_values)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to call after_trial: {e:?}")))
         })
     }

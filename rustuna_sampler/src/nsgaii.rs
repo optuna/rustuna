@@ -414,6 +414,7 @@ impl Sampler for NsgaiiSampler {
         &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         _name: &str,
         distribution: &Distribution,
     ) -> Result<f64> {
@@ -493,6 +494,7 @@ impl Sampler for NsgaiiSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
         let mut guard = storage
@@ -634,6 +636,7 @@ impl Sampler for NsgaiiSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         state_values: &TrialStateValues,
     ) -> Result<()> {
         if let TrialStateValues::Complete(_) = state_values {

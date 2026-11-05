@@ -22,6 +22,7 @@ class DummyIndependentSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
     ) -> None:
         return None
 
@@ -29,6 +30,7 @@ class DummyIndependentSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]:
         assert False, "Unreachable code"
@@ -37,6 +39,7 @@ class DummyIndependentSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float:
@@ -53,6 +56,7 @@ class DummyIndependentSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: list[float] | None = None,
     ) -> None:
@@ -71,6 +75,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
     ) -> None:
         return None
 
@@ -78,6 +83,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]:
         params = {}
@@ -97,6 +103,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float:
@@ -113,6 +120,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: list[float] | None = None,
     ) -> None:
@@ -130,6 +138,7 @@ class RecordingSampler(DummyIndependentSampler):
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
     ) -> None:
         trial = storage.get_trial(ctx.trial_id)
         self.before_trial_calls.append((ctx.study_id, ctx.trial_number, trial.state))
@@ -138,6 +147,7 @@ class RecordingSampler(DummyIndependentSampler):
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: list[float] | None = None,
     ) -> None:
@@ -149,6 +159,7 @@ class FailingAfterTrialSampler(DummyIndependentSampler):
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: list[float] | None = None,
     ) -> None:

@@ -89,11 +89,12 @@ impl Sampler for QmcSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         name: &str,
         distribution: &Distribution,
     ) -> Result<f64> {
         self.independent_sampler
-            .sample_independent(ctx, storage, name, distribution)
+            .sample_independent(ctx, storage, trial_queue, name, distribution)
     }
 
     fn support_joint_sampling(&self) -> bool {
@@ -104,6 +105,7 @@ impl Sampler for QmcSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
         if search_space.is_empty() {
@@ -148,10 +150,11 @@ impl Sampler for QmcSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         state_values: &TrialStateValues,
     ) -> Result<()> {
         self.independent_sampler
-            .after_trial(ctx, storage, state_values)
+            .after_trial(ctx, storage, trial_queue, state_values)
     }
 }
 

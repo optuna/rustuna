@@ -37,7 +37,9 @@ def test_cmaes_sampler_samples_independently_from_multiple_threads() -> None:
     distribution = rustuna.distributions.FloatDistribution(-1, 1)
 
     def sample(_: int) -> float:
-        return sampler.sample_independent(ctx, storage, "x", distribution)
+        return sampler.sample_independent(
+            ctx, storage, study.trial_queue, "x", distribution
+        )
 
     with ThreadPoolExecutor(max_workers=4) as executor:
         values = list(executor.map(sample, range(100)))

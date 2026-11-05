@@ -183,7 +183,8 @@ impl Study {
             trial_id: persisted_trial.id,
             directions: self.directions.clone(),
         };
-        self.sampler.before_trial(&ctx, self.storage.clone())?;
+        self.sampler
+            .before_trial(&ctx, self.storage.clone(), Arc::clone(&self.queue))?;
 
         let joint_params: HashMap<String, (Distribution, f64)> =
             if self.sampler.support_joint_sampling() {
@@ -198,9 +199,12 @@ impl Study {
                     })?
                     .get_joint_search_space(self.id)?;
 
-                let params =
-                    self.sampler
-                        .sample_joint(&ctx, self.storage.clone(), &joint_search_space)?;
+                let params = self.sampler.sample_joint(
+                    &ctx,
+                    self.storage.clone(),
+                    Arc::clone(&self.queue),
+                    &joint_search_space,
+                )?;
                 let mut joint_params = HashMap::new();
                 for (name, param_value) in params {
                     if !joint_search_space.contains_key(&name) {
@@ -219,6 +223,7 @@ impl Study {
             self.directions.clone(),
             Arc::clone(&self.storage),
             Arc::clone(&self.sampler),
+            Arc::clone(&self.queue),
             joint_params,
         );
         Ok(trial)
@@ -254,9 +259,12 @@ impl Study {
             trial_number,
             trial_id,
         };
-        let after_trial_result =
-            self.sampler
-                .after_trial(&ctx, self.storage.clone(), &state_values);
+        let after_trial_result = self.sampler.after_trial(
+            &ctx,
+            self.storage.clone(),
+            Arc::clone(&self.queue),
+            &state_values,
+        );
 
         let mut storage_guard = self.storage.write().map_err(|e| {
             Error::with_reason(
@@ -579,6 +587,7 @@ mod tests {
             &self,
             _ctx: &SamplerContext,
             _storage: Arc<RwLock<dyn Storage>>,
+            _trial_queue: Arc<dyn TrialQueue>,
             _name: &str,
             _distribution: &Distribution,
         ) -> Result<f64> {
@@ -593,6 +602,7 @@ mod tests {
             &self,
             _ctx: &SamplerContext,
             _storage: Arc<RwLock<dyn Storage>>,
+            _trial_queue: Arc<dyn TrialQueue>,
             _search_space: &HashMap<String, Distribution>,
         ) -> Result<HashMap<String, f64>> {
             unreachable!()
@@ -602,6 +612,7 @@ mod tests {
             &self,
             ctx: &SamplerContext,
             storage: Arc<RwLock<dyn Storage>>,
+            _trial_queue: Arc<dyn TrialQueue>,
             state_values: &TrialStateValues,
         ) -> Result<()> {
             let mut storage_guard = storage.write().map_err(|e| {

@@ -760,7 +760,12 @@ impl TpeSampler {
 }
 
 impl Sampler for TpeSampler {
-    fn before_trial(&self, ctx: &Context, storage: Arc<RwLock<dyn Storage>>) -> Result<()> {
+    fn before_trial(
+        &self,
+        ctx: &Context,
+        storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
+    ) -> Result<()> {
         let observations = self.snapshot_from_storage(ctx, &storage)?;
         let mut cache = self.observations_cache.write().map_err(|e| {
             Error::with_reason(
@@ -795,6 +800,7 @@ impl Sampler for TpeSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         name: &str,
         distribution: &Distribution,
     ) -> Result<f64> {
@@ -804,9 +810,13 @@ impl Sampler for TpeSampler {
 
         let search_space = HashMap::from([(name.to_string(), distribution.clone())]);
         let Some(observations) = self.observations_for_trial(ctx, &storage)? else {
-            return self
-                .random_sampler
-                .sample_independent(ctx, storage, name, distribution);
+            return self.random_sampler.sample_independent(
+                ctx,
+                storage,
+                trial_queue,
+                name,
+                distribution,
+            );
         };
         let params = self.sample(ctx, &observations.view(&search_space))?;
         Ok(params[name])
@@ -824,6 +834,7 @@ impl Sampler for TpeSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
         // Resolve the effective multivariate flag. Default (`None`) follows Optuna: multivariate
@@ -850,6 +861,7 @@ impl Sampler for TpeSampler {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         _state_values: &TrialStateValues,
     ) -> Result<()> {
         self.observations_cache
@@ -876,6 +888,10 @@ mod tests {
     use rustuna_core::storage::InMemoryStorage;
     use rustuna_core::study::{create_study, Direction};
     use rustuna_core::study::{get_best_trial, get_pareto_front};
+
+    fn test_trial_queue() -> Arc<dyn rustuna_core::trial_queue::TrialQueue> {
+        Arc::new(rustuna_core::trial_queue::InMemoryTrialQueue::new())
+    }
 
     #[test]
     fn test_optimize() {
@@ -1380,13 +1396,27 @@ mod tests {
         let distribution = Distribution::new_float(0.0, 10.0, None, false);
         let cached = TpeSampler::seed_from_u64(7);
         let direct = TpeSampler::seed_from_u64(7);
-        cached.before_trial(&ctx, study.storage.clone()).unwrap();
+        cached
+            .before_trial(&ctx, study.storage.clone(), test_trial_queue())
+            .unwrap();
         for name in ["x", "y", "unobserved"] {
             let a = cached
-                .sample_independent(&ctx, study.storage.clone(), name, &distribution)
+                .sample_independent(
+                    &ctx,
+                    study.storage.clone(),
+                    test_trial_queue(),
+                    name,
+                    &distribution,
+                )
                 .unwrap();
             let b = direct
-                .sample_independent(&ctx, study.storage.clone(), name, &distribution)
+                .sample_independent(
+                    &ctx,
+                    study.storage.clone(),
+                    test_trial_queue(),
+                    name,
+                    &distribution,
+                )
                 .unwrap();
             assert_eq!(a, b);
             assert!((0.0..=10.0).contains(&a));
@@ -1397,10 +1427,20 @@ mod tests {
         ]);
         assert_eq!(
             cached
-                .sample_joint(&ctx, study.storage.clone(), &search_space)
+                .sample_joint(
+                    &ctx,
+                    study.storage.clone(),
+                    test_trial_queue(),
+                    &search_space,
+                )
                 .unwrap(),
             direct
-                .sample_joint(&ctx, study.storage.clone(), &search_space)
+                .sample_joint(
+                    &ctx,
+                    study.storage.clone(),
+                    test_trial_queue(),
+                    &search_space,
+                )
                 .unwrap()
         );
     }
@@ -1434,7 +1474,7 @@ mod tests {
         };
 
         probe
-            .before_trial(&ctx(100), study.storage.clone())
+            .before_trial(&ctx(100), study.storage.clone(), test_trial_queue())
             .unwrap();
         assert!(matches!(
             probe
@@ -1450,7 +1490,7 @@ mod tests {
             .optimize(|mut t| Ok(vec![t.suggest_float("x", 0.0, 1.0)?]), 2)
             .unwrap();
         probe
-            .before_trial(&ctx(101), study.storage.clone())
+            .before_trial(&ctx(101), study.storage.clone(), test_trial_queue())
             .unwrap();
         assert!(matches!(
             probe
@@ -1466,6 +1506,7 @@ mod tests {
             .after_trial(
                 &ctx(101),
                 study.storage.clone(),
+                test_trial_queue(),
                 &TrialStateValues::Complete(vec![0.0]),
             )
             .unwrap();
@@ -1478,7 +1519,7 @@ mod tests {
 
         for trial_id in 200..(200 + OBSERVATIONS_CACHE_CAP as u32 + 5) {
             probe
-                .before_trial(&ctx(trial_id), study.storage.clone())
+                .before_trial(&ctx(trial_id), study.storage.clone(), test_trial_queue())
                 .unwrap();
         }
         let cache = probe.observations_cache.read().unwrap();
@@ -1684,8 +1725,12 @@ mod tests {
             trial_number: 1,
             directions: vec![Direction::Minimize],
         };
-        sampler.before_trial(&ctx, first.clone()).unwrap();
-        sampler.before_trial(&ctx, second.clone()).unwrap();
+        sampler
+            .before_trial(&ctx, first.clone(), test_trial_queue())
+            .unwrap();
+        sampler
+            .before_trial(&ctx, second.clone(), test_trial_queue())
+            .unwrap();
         let values = |storage: &Arc<RwLock<dyn Storage>>| {
             sampler
                 .observations_for_trial(&ctx, storage)
@@ -1697,11 +1742,18 @@ mod tests {
         assert_eq!(values(&first), [1.0]);
         assert_eq!(values(&second), [9.0]);
         sampler
-            .after_trial(&ctx, first.clone(), &TrialStateValues::Fail)
+            .after_trial(
+                &ctx,
+                first.clone(),
+                test_trial_queue(),
+                &TrialStateValues::Fail,
+            )
             .unwrap();
         assert_eq!(values(&second), [9.0]);
         drop(first);
-        sampler.before_trial(&ctx, second).unwrap();
+        sampler
+            .before_trial(&ctx, second, test_trial_queue())
+            .unwrap();
         assert_eq!(sampler.observations_cache.read().unwrap().studies.len(), 1);
     }
 
@@ -1738,7 +1790,9 @@ mod tests {
                 .create_new_trial_from_template(study_id, &trial)
                 .unwrap();
             for _ in 0..2 {
-                assert!(sampler.before_trial(&ctx, storage.clone()).is_err());
+                assert!(sampler
+                    .before_trial(&ctx, storage.clone(), test_trial_queue())
+                    .is_err());
                 let cache = sampler.observations_cache.read().unwrap();
                 assert!(cache.studies.is_empty());
                 assert!(cache.per_trial.is_empty());
@@ -1763,7 +1817,9 @@ mod tests {
                 trial_number: 0,
                 directions: vec![Direction::Minimize],
             };
-            sampler.before_trial(&ctx, storage.clone()).unwrap();
+            sampler
+                .before_trial(&ctx, storage.clone(), test_trial_queue())
+                .unwrap();
         }
         let cache = sampler.observations_cache.read().unwrap();
         assert_eq!(cache.studies.len(), OBSERVATIONS_CACHE_CAP);

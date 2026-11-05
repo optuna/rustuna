@@ -42,7 +42,12 @@ pub trait Sampler: Send + Sync {
     ///
     /// This corresponds to Optuna's `before_trial` hook. The trial can be retrieved from
     /// `storage` with `ctx.trial_id`, and the study can be retrieved with `ctx.study_id`.
-    fn before_trial(&self, _ctx: &Context, _storage: Arc<RwLock<dyn Storage>>) -> Result<()> {
+    fn before_trial(
+        &self,
+        _ctx: &Context,
+        _storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -55,6 +60,7 @@ pub trait Sampler: Send + Sync {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
         name: &str,
         distribution: &Distribution,
     ) -> Result<f64>;
@@ -71,6 +77,7 @@ pub trait Sampler: Send + Sync {
         &self,
         ctx: &Context,
         storage: Arc<RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
         search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>>;
     /// Hook called when a trial is about to be finalized with the given state.
@@ -81,6 +88,7 @@ pub trait Sampler: Send + Sync {
         &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
         _state_values: &TrialStateValues,
     ) -> Result<()> {
         Ok(())
@@ -175,6 +183,7 @@ impl Sampler for RandomSampler {
         &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
         _name: &str,
         distribution: &Distribution,
     ) -> Result<f64> {
@@ -223,6 +232,7 @@ impl Sampler for RandomSampler {
         &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
         _search_space: &HashMap<String, Distribution>,
     ) -> Result<HashMap<String, f64>> {
         unreachable!()
@@ -232,6 +242,7 @@ impl Sampler for RandomSampler {
         &self,
         _ctx: &Context,
         _storage: Arc<RwLock<dyn Storage>>,
+        _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
         _state_values: &TrialStateValues,
     ) -> Result<()> {
         Ok(())
@@ -246,6 +257,7 @@ mod tests {
     use crate::storage::InMemoryStorage;
     use crate::study::create_study;
     use crate::trial::Trial;
+    use crate::trial_queue::InMemoryTrialQueue;
 
     pub struct DummyJointSampler {
         joint_params: HashMap<String, f64>,
@@ -255,6 +267,7 @@ mod tests {
             &self,
             _ctx: &Context,
             _storage: Arc<RwLock<dyn Storage>>,
+            _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
             _name: &str,
             _distribution: &Distribution,
         ) -> Result<f64> {
@@ -269,6 +282,7 @@ mod tests {
             &self,
             _ctx: &Context,
             _storage: Arc<RwLock<dyn Storage>>,
+            _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
             _search_space: &HashMap<String, Distribution>,
         ) -> Result<HashMap<String, f64>> {
             Ok(self.joint_params.clone())
@@ -278,6 +292,7 @@ mod tests {
             &self,
             _ctx: &Context,
             _storage: Arc<RwLock<dyn Storage>>,
+            _trial_queue: Arc<dyn crate::trial_queue::TrialQueue>,
             _state_values: &TrialStateValues,
         ) -> Result<()> {
             Ok(())
@@ -294,12 +309,14 @@ mod tests {
     fn random_sampler_can_be_shared_between_threads() -> Result<()> {
         let sampler: Arc<dyn Sampler> = Arc::new(RandomSampler::seed_from_u64(0));
         let storage: Arc<RwLock<dyn Storage>> = Arc::new(RwLock::new(InMemoryStorage::new()));
+        let trial_queue: Arc<dyn TrialQueue> = Arc::new(InMemoryTrialQueue::new());
         let distribution = Distribution::new_float(-1.0, 1.0, None, false);
         let mut handles = Vec::new();
 
         for thread_id in 0..4 {
             let sampler = Arc::clone(&sampler);
             let storage = Arc::clone(&storage);
+            let trial_queue = Arc::clone(&trial_queue);
             let distribution = distribution.clone();
             handles.push(thread::spawn(move || -> Result<()> {
                 for trial_number in 0..100 {
@@ -312,6 +329,7 @@ mod tests {
                     let value = sampler.sample_independent(
                         &ctx,
                         Arc::clone(&storage),
+                        Arc::clone(&trial_queue),
                         "x",
                         &distribution,
                     )?;

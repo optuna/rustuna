@@ -19,6 +19,7 @@ from rustuna.converter import (
 )
 from rustuna.converter._storage import ToRustunaStorage
 from rustuna.converter._trial import to_rustuna_state
+from rustuna.trial_queue import InMemoryTrialQueue, TrialQueueProtocol
 
 if TYPE_CHECKING:
     from rustuna.samplers import SamplerProtocol
@@ -53,11 +54,17 @@ class ToOptunaSampler(BaseSampler):
         self._sampler = sampler
         self._inter_section_search_space = IntersectionSearchSpace()
         self._storage: ToRustStorage | None = None
+        self._trial_queues: dict[int, TrialQueueProtocol] = {}
 
     def _get_storage(self, storage: BaseStorage) -> StorageProtocol:
         if self._storage is None:
             self._storage = ToRustStorage(ToRustunaStorage(storage))
         return self._storage
+
+    def _get_trial_queue(self, study_id: int) -> TrialQueueProtocol:
+        if study_id not in self._trial_queues:
+            self._trial_queues[study_id] = InMemoryTrialQueue()
+        return self._trial_queues[study_id]
 
     def sample_relative(
         self,
@@ -76,6 +83,7 @@ class ToOptunaSampler(BaseSampler):
             directions=to_rustuna_directions(study._directions),
         )
         storage = self._get_storage(study._storage)
+        trial_queue = self._get_trial_queue(study._study_id)
         # PyObjectStorage syncs its Rustuna-side cache with the underlying Optuna storage
         # only when get_trials() is called. In this flow, trials are created and completed
         # through the Optuna storage directly, so sync explicitly here; otherwise Rustuna
@@ -84,7 +92,9 @@ class ToOptunaSampler(BaseSampler):
         # TODO(c-bata): Consider how to remove this redundant storage.get_trials() call.
         storage.get_trials(study._study_id, states=[rustuna.trial.TrialState.COMPLETE])
         rustuna_search_space = to_rustuna_distributions(search_space)
-        internal_params = self._sampler.sample_joint(ctx, storage, rustuna_search_space)
+        internal_params = self._sampler.sample_joint(
+            ctx, storage, trial_queue, rustuna_search_space
+        )
         external_params: dict[str, Any] = {}
         for param_name in internal_params:
             distribution = search_space[param_name]
@@ -103,7 +113,8 @@ class ToOptunaSampler(BaseSampler):
             directions=to_rustuna_directions(study._directions),
         )
         storage = self._get_storage(study._storage)
-        self._sampler.before_trial(ctx, storage)
+        trial_queue = self._get_trial_queue(study._study_id)
+        self._sampler.before_trial(ctx, storage, trial_queue)
 
     def sample_independent(
         self,
@@ -120,9 +131,10 @@ class ToOptunaSampler(BaseSampler):
             directions=to_rustuna_directions(study._directions),
         )
         storage = self._get_storage(study._storage)
+        trial_queue = self._get_trial_queue(study._study_id)
         distribution = to_rustuna_distribution(param_distribution)
         internal_param = self._sampler.sample_independent(
-            ctx, storage, param_name, distribution
+            ctx, storage, trial_queue, param_name, distribution
         )
         return param_distribution.to_external_repr(internal_param)
 
@@ -162,9 +174,11 @@ class ToOptunaSampler(BaseSampler):
             directions=to_rustuna_directions(study._directions),
         )
         storage = self._get_storage(study._storage)
+        trial_queue = self._get_trial_queue(study._study_id)
         self._sampler.after_trial(
             ctx,
             storage,
+            trial_queue,
             to_rustuna_state(state),
             list(values) if values is not None else None,
         )
