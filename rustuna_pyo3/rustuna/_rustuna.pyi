@@ -1165,6 +1165,7 @@ class SamplerContext:
     Attributes:
         study_id: Study ID.
         trial_number: Trial number.
+        trial_id: Trial ID.
         directions: Optimization directions.
     """
 
@@ -1199,12 +1200,14 @@ class RandomSampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]: ...
     def sample_independent(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float: ...
@@ -1212,11 +1215,13 @@ class RandomSampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
     ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         state: TrialState,
         values: list[float] | None = None,
     ) -> None: ...
@@ -1299,12 +1304,14 @@ class TPESampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]: ...
     def sample_independent(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float: ...
@@ -1312,11 +1319,13 @@ class TPESampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
     ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         state: TrialState,
         values: list[float] | None = None,
     ) -> None: ...
@@ -1386,12 +1395,14 @@ class NSGAIISampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]: ...
     def sample_independent(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float: ...
@@ -1399,11 +1410,13 @@ class NSGAIISampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
     ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         state: TrialState,
         values: list[float] | None = None,
     ) -> None: ...
@@ -1434,12 +1447,14 @@ class CmaEsSampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]: ...
     def sample_independent(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float: ...
@@ -1447,11 +1462,13 @@ class CmaEsSampler:
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
     ) -> None: ...
     def after_trial(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         state: TrialState,
         values: list[float] | None = None,
     ) -> None: ...

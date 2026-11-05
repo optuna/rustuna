@@ -72,6 +72,7 @@ class RecordingSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
     ) -> None:
         self.before_trial_calls.append((ctx.study_id, ctx.trial_number))
 
@@ -79,6 +80,7 @@ class RecordingSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]:
         raise AssertionError("sample_joint must not be called")
@@ -87,6 +89,7 @@ class RecordingSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float:
@@ -103,6 +106,7 @@ class RecordingSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: Sequence[float] | None = None,
     ) -> None:
@@ -121,6 +125,7 @@ class FailingAfterTrialSampler(RecordingSampler):
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: Sequence[float] | None = None,
     ) -> None:

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from rustuna.samplers import SamplerContext
     from rustuna.study import PersistedStudy, StudyDirection
     from rustuna.trial import PersistedTrial, TrialState
+    from rustuna.trial_queue import TrialQueueProtocol
 
 
 class SamplerProtocol(Protocol):
@@ -26,6 +27,7 @@ class SamplerProtocol(Protocol):
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]:
         """Sample multiple parameters simultaneously.
@@ -33,6 +35,7 @@ class SamplerProtocol(Protocol):
         Args:
             ctx: Sampler context.
             storage: Storage object.
+            trial_queue: Trial queue shared by this study.
             search_space: Parameter distributions.
 
         Returns:
@@ -43,6 +46,7 @@ class SamplerProtocol(Protocol):
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
     ) -> None:
         """Run sampler pre-processing before search-space inference.
 
@@ -52,12 +56,14 @@ class SamplerProtocol(Protocol):
         Args:
             ctx: Sampler context.
             storage: Storage object.
+            trial_queue: Trial queue shared by this study.
         """
 
     def sample_independent(
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float:
@@ -66,6 +72,7 @@ class SamplerProtocol(Protocol):
         Args:
             ctx: Sampler context.
             storage: Storage object.
+            trial_queue: Trial queue shared by this study.
             name: Parameter name.
             distribution: Parameter distribution.
 
@@ -77,6 +84,7 @@ class SamplerProtocol(Protocol):
         self,
         ctx: SamplerContext,
         storage: StorageProtocol,
+        trial_queue: TrialQueueProtocol,
         state: TrialState,
         values: list[float] | None = None,
     ) -> None:
@@ -85,6 +93,7 @@ class SamplerProtocol(Protocol):
         Args:
             ctx: Sampler context.
             storage: Storage object.
+            trial_queue: Trial queue shared by this study.
             state: Final trial state.
             values: Final objective values. ``None`` unless the trial completed.
         """

@@ -12,6 +12,7 @@ use rustuna_sampler::tpe::{TpeBuilder, TpeSampler};
 use crate::distribution::PyDistribution;
 use crate::sampler::{extract_storage, PySamplerContext};
 use crate::trial::PyTrialState;
+use crate::trial_queue::extract_trial_queue;
 
 #[derive(Clone)]
 #[pyclass(name = "TPESampler", from_py_object)]
@@ -51,16 +52,18 @@ impl PyTpeSampler {
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
         name: &str,
         distribution: &PyDistribution,
     ) -> PyResult<f64> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let context = ctx.context.clone();
         let name = name.to_owned();
         let distribution = distribution.distribution.clone();
         py.detach(|| {
             self.sampler
-                .sample_independent(&context, arc_storage, &name, &distribution)
+                .sample_independent(&context, arc_storage, arc_trial_queue, &name, &distribution)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!("Failed to sample independent: {e:?}"))
                 })
@@ -72,9 +75,11 @@ impl PyTpeSampler {
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
         search_space: HashMap<String, PyDistribution>,
     ) -> PyResult<HashMap<String, f64>> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let context = ctx.context.clone();
         let search_space = search_space
             .into_iter()
@@ -82,7 +87,7 @@ impl PyTpeSampler {
             .collect();
         py.detach(|| {
             self.sampler
-                .sample_joint(&context, arc_storage, &search_space)
+                .sample_joint(&context, arc_storage, arc_trial_queue, &search_space)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to sample joint: {e:?}")))
         })
     }
@@ -92,26 +97,30 @@ impl PyTpeSampler {
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
     ) -> PyResult<()> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let context = ctx.context.clone();
         py.detach(|| {
             self.sampler
-                .before_trial(&context, arc_storage)
+                .before_trial(&context, arc_storage, arc_trial_queue)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to call before_trial: {e:?}")))
         })
     }
 
-    #[pyo3(signature = (ctx, storage, state, values = None))]
+    #[pyo3(signature = (ctx, storage, trial_queue, state, values = None))]
     fn after_trial(
         &self,
         py: Python<'_>,
         ctx: &PySamplerContext,
         storage: Py<PyAny>,
+        trial_queue: Py<PyAny>,
         state: PyTrialState,
         values: Option<Vec<f64>>,
     ) -> PyResult<()> {
         let arc_storage = extract_storage(storage)?;
+        let arc_trial_queue = extract_trial_queue(trial_queue)?;
         let state_values = match state {
             PyTrialState::RUNNING => TrialStateValues::Running,
             PyTrialState::COMPLETE => TrialStateValues::Complete(values.ok_or(
@@ -124,7 +133,7 @@ impl PyTpeSampler {
         let context = ctx.context.clone();
         py.detach(|| {
             self.sampler
-                .after_trial(&context, arc_storage, &state_values)
+                .after_trial(&context, arc_storage, arc_trial_queue, &state_values)
                 .map_err(|e| PyRuntimeError::new_err(format!("Failed to call after_trial: {e:?}")))
         })
     }

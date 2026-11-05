@@ -407,7 +407,11 @@ def test_sample():
             directions=study.directions,
         )
         value = sampler.sample_independent(
-            ctx, storage, "x", rustuna.distributions.FloatDistribution(0, 1)
+            ctx,
+            storage,
+            study.trial_queue,
+            "x",
+            rustuna.distributions.FloatDistribution(0, 1),
         )
         assert 0 <= value <= 1
 

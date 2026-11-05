@@ -144,6 +144,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
     ) -> None:
         return None
 
@@ -151,6 +152,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         search_space: dict[str, Distribution],
     ) -> dict[str, float]:
         # TODO(c-bata): Avoid calling sample_joint if the search space is empty.
@@ -175,6 +177,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         name: str,
         distribution: Distribution,
     ) -> float:
@@ -191,6 +194,7 @@ class DummyJointSampler:
         self,
         ctx: rustuna.samplers.SamplerContext,
         storage: rustuna.storages.StorageProtocol,
+        trial_queue: rustuna.trial_queue.TrialQueueProtocol,
         state: rustuna.trial.TrialState,
         values: list[float] | None = None,
     ) -> None:

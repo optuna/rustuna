@@ -13,6 +13,7 @@ use crate::distribution::PyDistribution;
 use crate::sampler::PySamplerContext;
 use crate::storage::to_python::ToPythonStorage;
 use crate::trial::PyTrialState;
+use crate::trial_queue::to_python::ToPythonTrialQueue;
 
 // ToRustSampler adapts a Python object implementing rustuna.SamplerProtocol to
 // rustuna_core::sampler::Sampler. Rustuna can therefore use Python samplers through the same
@@ -32,6 +33,7 @@ impl Sampler for ToRustSampler {
         &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn rustuna_core::storage::Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
     ) -> rustuna_core::Result<()> {
         let obj = self.obj.lock().map_err(|e| {
             rustuna_core::Error::with_reason(
@@ -42,7 +44,14 @@ impl Sampler for ToRustSampler {
         Python::attach(|py| {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage);
-            obj.call_method1(py, "before_trial", (py_ctx, py_storage))
+            let py_trial_queue =
+                Py::new(py, ToPythonTrialQueue::new(trial_queue)).map_err(|e| {
+                    rustuna_core::Error::with_reason(
+                        rustuna_core::ErrorKind::SamplerError,
+                        e.to_string(),
+                    )
+                })?;
+            obj.call_method1(py, "before_trial", (py_ctx, py_storage, py_trial_queue))
                 .map_err(|e| {
                     rustuna_core::Error::with_reason(
                         rustuna_core::ErrorKind::SamplerError,
@@ -57,6 +66,7 @@ impl Sampler for ToRustSampler {
         &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn rustuna_core::storage::Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         name: &str,
         distribution: &rustuna_core::distribution::Distribution,
     ) -> rustuna_core::Result<f64> {
@@ -79,12 +89,19 @@ impl Sampler for ToRustSampler {
         Python::attach(|py| {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
+            let py_trial_queue =
+                Py::new(py, ToPythonTrialQueue::new(trial_queue)).map_err(|e| {
+                    rustuna_core::Error::with_reason(
+                        rustuna_core::ErrorKind::SamplerError,
+                        e.to_string(),
+                    )
+                })?;
             let py_distribution = PyDistribution::new(distribution.clone(), name, &study_attrs);
             let py_result = obj
                 .call_method1(
                     py,
                     "sample_independent",
-                    (py_ctx, py_storage, name, py_distribution),
+                    (py_ctx, py_storage, py_trial_queue, name, py_distribution),
                 )
                 .map_err(|e| {
                     rustuna_core::Error::with_reason(
@@ -118,6 +135,7 @@ impl Sampler for ToRustSampler {
         &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         search_space: &HashMap<String, rustuna_core::distribution::Distribution>,
     ) -> rustuna_core::Result<HashMap<String, f64>> {
         let mut guard = storage.write().map_err(|e| {
@@ -136,6 +154,13 @@ impl Sampler for ToRustSampler {
         Python::attach(|py| {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
+            let py_trial_queue =
+                Py::new(py, ToPythonTrialQueue::new(trial_queue)).map_err(|e| {
+                    rustuna_core::Error::with_reason(
+                        rustuna_core::ErrorKind::SamplerError,
+                        e.to_string(),
+                    )
+                })?;
             let py_search_space = PyDict::new(py);
             for (k, v) in search_space {
                 let py_distribution = Py::new(py, PyDistribution::new(v.clone(), k, &study_attrs))
@@ -153,7 +178,11 @@ impl Sampler for ToRustSampler {
                 })?;
             }
             let py_result = obj
-                .call_method1(py, "sample_joint", (py_ctx, py_storage, py_search_space))
+                .call_method1(
+                    py,
+                    "sample_joint",
+                    (py_ctx, py_storage, py_trial_queue, py_search_space),
+                )
                 .map_err(|e| {
                     rustuna_core::Error::with_reason(
                         rustuna_core::ErrorKind::SamplerError,
@@ -174,6 +203,7 @@ impl Sampler for ToRustSampler {
         &self,
         ctx: &SamplerContext,
         storage: Arc<std::sync::RwLock<dyn Storage>>,
+        trial_queue: Arc<dyn rustuna_core::trial_queue::TrialQueue>,
         state_values: &TrialStateValues,
     ) -> rustuna_core::Result<()> {
         let py_state = PyTrialState::from(state_values.clone());
@@ -191,13 +221,24 @@ impl Sampler for ToRustSampler {
         Python::attach(|py| {
             let py_ctx = PySamplerContext::from(ctx.clone());
             let py_storage = ToPythonStorage::new(storage.clone());
-            obj.call_method1(py, "after_trial", (py_ctx, py_storage, py_state, py_values))
-                .map_err(|e| {
+            let py_trial_queue =
+                Py::new(py, ToPythonTrialQueue::new(trial_queue)).map_err(|e| {
                     rustuna_core::Error::with_reason(
                         rustuna_core::ErrorKind::SamplerError,
                         e.to_string(),
                     )
                 })?;
+            obj.call_method1(
+                py,
+                "after_trial",
+                (py_ctx, py_storage, py_trial_queue, py_state, py_values),
+            )
+            .map_err(|e| {
+                rustuna_core::Error::with_reason(
+                    rustuna_core::ErrorKind::SamplerError,
+                    e.to_string(),
+                )
+            })?;
             Ok(())
         })
     }
