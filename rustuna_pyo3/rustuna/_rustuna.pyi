@@ -1165,13 +1165,16 @@ class SamplerContext:
     Attributes:
         study_id: Study ID.
         trial_number: Trial number.
+        trial_id: Trial ID.
         directions: Optimization directions.
+        trial_queue: The queue shared with the study.
     """
 
     study_id: int
     trial_number: int
     trial_id: int
     directions: list[StudyDirection]
+    trial_queue: TrialQueueProtocol
 
     def __init__(
         self,

@@ -877,6 +877,10 @@ mod tests {
     use rustuna_core::study::{create_study, Direction};
     use rustuna_core::study::{get_best_trial, get_pareto_front};
 
+    fn test_trial_queue() -> Arc<dyn rustuna_core::trial_queue::TrialQueue> {
+        Arc::new(rustuna_core::trial_queue::InMemoryTrialQueue::new())
+    }
+
     #[test]
     fn test_optimize() {
         let storage = InMemoryStorage::new();
@@ -1376,6 +1380,7 @@ mod tests {
             directions: vec![Direction::Minimize],
             trial_number: 15,
             trial_id: 999,
+            trial_queue: test_trial_queue(),
         };
         let distribution = Distribution::new_float(0.0, 10.0, None, false);
         let cached = TpeSampler::seed_from_u64(7);
@@ -1424,6 +1429,7 @@ mod tests {
             directions: vec![Direction::Minimize],
             trial_number: trial_id,
             trial_id,
+            trial_queue: test_trial_queue(),
         };
         let key = |trial_id| {
             (
@@ -1683,6 +1689,7 @@ mod tests {
             trial_id: 100,
             trial_number: 1,
             directions: vec![Direction::Minimize],
+            trial_queue: test_trial_queue(),
         };
         sampler.before_trial(&ctx, first.clone()).unwrap();
         sampler.before_trial(&ctx, second.clone()).unwrap();
@@ -1727,6 +1734,7 @@ mod tests {
                 trial_id: u32::MAX,
                 trial_number: 2,
                 directions: vec![Direction::Minimize],
+                trial_queue: test_trial_queue(),
             };
             if prime_cache {
                 sampler.snapshot_from_storage(&ctx, &storage).unwrap();
@@ -1762,6 +1770,7 @@ mod tests {
                 trial_id: study_id,
                 trial_number: 0,
                 directions: vec![Direction::Minimize],
+                trial_queue: test_trial_queue(),
             };
             sampler.before_trial(&ctx, storage.clone()).unwrap();
         }
