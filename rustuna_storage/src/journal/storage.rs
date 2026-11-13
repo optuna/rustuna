@@ -848,10 +848,7 @@ impl Storage for JournalStorage {
     }
 
     fn may_omit_trials(&self) -> bool {
-        self.replay
-            .trials_by_study
-            .values()
-            .any(|trials| trials.iter().any(Option::is_none))
+        self.replay.apply_discard
     }
 
     fn attr_format(&self) -> AttrFormat {
@@ -2585,6 +2582,29 @@ mod tests {
         assert_eq!(trials.len(), 1);
         assert_eq!(trials[0].as_ref().unwrap().id, trial_id);
         assert_eq!(storage2.get_trial(trial_id)?.id, trial_id);
+        Ok(())
+    }
+
+    #[test]
+    fn may_omit_trials_follows_apply_discard_before_any_discard() -> Result<()> {
+        for apply_discard in [false, true] {
+            let backend = InMemoryJournalBackend {
+                logs: Arc::new(Mutex::new(Vec::new())),
+            };
+            let mut storage = JournalStorage::new_with_options(
+                Box::new(backend),
+                JournalStorageOptions {
+                    apply_discard,
+                    ..Default::default()
+                },
+            )?;
+            assert_eq!(storage.may_omit_trials(), apply_discard);
+
+            let study_id = storage.create_new_study("s", vec![Direction::Minimize])?.id;
+            let trial_id = storage.create_new_trial(study_id)?.id;
+            storage.discard_trials(&[trial_id])?;
+            assert_eq!(storage.may_omit_trials(), apply_discard);
+        }
         Ok(())
     }
 

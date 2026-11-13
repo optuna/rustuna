@@ -164,3 +164,31 @@ def test_get_n_trials_with_states_filter(storage: StorageProtocol) -> None:
         == 2
     )
     assert storage.get_n_trials(study._study_id, states=[]) == 0
+
+
+@pytest.mark.parametrize("storage_name", ["inmemory", "sqlite3", "journal-file"])
+@pytest.mark.parametrize("apply_discard", [False, True])
+def test_may_omit_trials_follows_apply_discard(
+    storage_name: str, apply_discard: bool
+) -> None:
+    with tempfile.TemporaryDirectory() as workdir:
+        storage: StorageProtocol
+        if storage_name == "inmemory":
+            storage = rustuna.storages.InMemoryStorage(apply_discard=apply_discard)
+        elif storage_name == "sqlite3":
+            storage = rustuna.storages.SQLite3Storage(
+                f"{workdir}/test.db", apply_discard=apply_discard
+            )
+        else:
+            storage = rustuna.storages.JournalFileStorage(
+                f"{workdir}/test.journal", apply_discard=apply_discard
+            )
+
+        assert storage.may_omit_trials() is apply_discard
+
+        study = storage.create_new_study(
+            "example study", [rustuna.study.StudyDirection.MINIMIZE]
+        )
+        trial_id = storage.create_new_trial(study.id)._trial_id
+        storage.discard_trials([trial_id])
+        assert storage.may_omit_trials() is apply_discard
