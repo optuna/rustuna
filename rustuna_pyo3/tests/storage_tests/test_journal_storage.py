@@ -22,6 +22,7 @@ def test_journal_file_storage_can_be_used_by_native_sampler() -> None:
             trial_number=trial.number,
             trial_id=trial._trial_id,
             directions=study.directions,
+            trial_queue=study.trial_queue,
         )
 
         value = rustuna.samplers.RandomSampler(seed=1).sample_independent(

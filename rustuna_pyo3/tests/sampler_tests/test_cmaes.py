@@ -33,6 +33,7 @@ def test_cmaes_sampler_samples_independently_from_multiple_threads() -> None:
         trial_number=0,
         trial_id=0,
         directions=study.directions,
+        trial_queue=study.trial_queue,
     )
     distribution = rustuna.distributions.FloatDistribution(-1, 1)
 

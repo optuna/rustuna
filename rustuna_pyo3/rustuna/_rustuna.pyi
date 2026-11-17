@@ -1183,6 +1183,7 @@ class SamplerContext:
         trial_number: int,
         trial_id: int,
         directions: list[StudyDirection],
+        trial_queue: TrialQueueProtocol,
     ) -> None: ...
 
 class RandomSampler:
