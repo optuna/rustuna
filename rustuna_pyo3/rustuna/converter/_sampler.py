@@ -69,12 +69,7 @@ class ToOptunaSampler(BaseSampler):
         if search_space == {}:
             return {}
 
-        ctx = rustuna.samplers.SamplerContext(
-            study_id=study._study_id,
-            trial_number=trial.number,
-            trial_id=trial._trial_id,
-            directions=to_rustuna_directions(study._directions),
-        )
+        ctx = _create_rustuna_sampler_context(study, trial)
         storage = self._get_storage(study._storage)
         # PyObjectStorage syncs its Rustuna-side cache with the underlying Optuna storage
         # only when get_trials() is called. In this flow, trials are created and completed
@@ -96,12 +91,7 @@ class ToOptunaSampler(BaseSampler):
 
     def before_trial(self, study: Study, trial: FrozenTrial) -> None:
         """Run pre-processing in the Rustuna sampler before search-space inference."""
-        ctx = rustuna.samplers.SamplerContext(
-            study_id=study._study_id,
-            trial_number=trial.number,
-            trial_id=trial._trial_id,
-            directions=to_rustuna_directions(study._directions),
-        )
+        ctx = _create_rustuna_sampler_context(study, trial)
         storage = self._get_storage(study._storage)
         self._sampler.before_trial(ctx, storage)
 
@@ -113,12 +103,7 @@ class ToOptunaSampler(BaseSampler):
         param_distribution: BaseDistribution,
     ) -> Any:
         """Sample one parameter using the Rustuna sampler."""
-        ctx = rustuna.samplers.SamplerContext(
-            study_id=study._study_id,
-            trial_number=trial.number,
-            trial_id=trial._trial_id,
-            directions=to_rustuna_directions(study._directions),
-        )
+        ctx = _create_rustuna_sampler_context(study, trial)
         storage = self._get_storage(study._storage)
         distribution = to_rustuna_distribution(param_distribution)
         internal_param = self._sampler.sample_independent(
@@ -155,12 +140,7 @@ class ToOptunaSampler(BaseSampler):
         values: Sequence[float] | None,
     ) -> None:
         """Notify the Rustuna sampler that a trial has finished."""
-        ctx = rustuna.samplers.SamplerContext(
-            study_id=study._study_id,
-            trial_number=trial.number,
-            trial_id=trial._trial_id,
-            directions=to_rustuna_directions(study._directions),
-        )
+        ctx = _create_rustuna_sampler_context(study, trial)
         storage = self._get_storage(study._storage)
         self._sampler.after_trial(
             ctx,
@@ -168,3 +148,17 @@ class ToOptunaSampler(BaseSampler):
             to_rustuna_state(state),
             list(values) if values is not None else None,
         )
+
+
+def _create_rustuna_sampler_context(
+    study: Study, trial: FrozenTrial
+) -> rustuna.samplers.SamplerContext:
+    # Optuna studies have no trial queue, so trials enqueued by the Rustuna sampler
+    # are never asked for. A new queue per context keeps them from piling up.
+    return rustuna.samplers.SamplerContext(
+        study_id=study._study_id,
+        trial_number=trial.number,
+        trial_id=trial._trial_id,
+        directions=to_rustuna_directions(study._directions),
+        trial_queue=rustuna.trial_queue.InMemoryTrialQueue(),
+    )

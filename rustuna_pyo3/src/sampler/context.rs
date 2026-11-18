@@ -3,9 +3,9 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 
 use rustuna_core::sampler::Context as SamplerContext;
-use rustuna_core::trial_queue::InMemoryTrialQueue;
 
 use crate::study::PyDirection;
+use crate::trial_queue::into_trial_queue_pyobj;
 use crate::trial_queue::to_python::ToPythonTrialQueue;
 
 #[derive(Clone)]
@@ -23,20 +23,23 @@ impl From<SamplerContext> for PySamplerContext {
 #[pymethods]
 impl PySamplerContext {
     #[new]
-    #[pyo3(signature = (*, study_id, trial_number, trial_id, directions))]
+    #[pyo3(signature = (*, study_id, trial_number, trial_id, directions, trial_queue))]
     pub fn py_new(
+        py: Python<'_>,
         study_id: u32,
         trial_number: u32,
         trial_id: u32,
         directions: Vec<PyDirection>,
+        trial_queue: Py<PyAny>,
     ) -> PyResult<Self> {
+        let (trial_queue, _) = into_trial_queue_pyobj(py, Some(trial_queue))?;
         Ok(PySamplerContext {
             context: SamplerContext {
                 study_id,
                 trial_number,
                 trial_id,
                 directions: directions.into_iter().map(|d| d.into()).collect(),
-                trial_queue: Arc::new(InMemoryTrialQueue::new()),
+                trial_queue,
             },
         })
     }

@@ -405,6 +405,7 @@ def test_sample():
             trial_number=trial.number,
             trial_id=trial._trial_id,
             directions=study.directions,
+            trial_queue=study.trial_queue,
         )
         value = sampler.sample_independent(
             ctx, storage, "x", rustuna.distributions.FloatDistribution(0, 1)

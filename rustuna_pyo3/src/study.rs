@@ -34,14 +34,11 @@ use crate::storage::sqlite3::PySQLite3Storage;
 use crate::storage::to_python::ToPythonStorage;
 use crate::storage::to_rust::ToRustStorage;
 use crate::trial::{PyPersistedTrial, PyTrial, PyTrialState};
-use crate::trial_queue::directory::PyDirectoryTrialQueue;
 use crate::trial_queue::inmemory::PyInMemoryTrialQueue;
-use crate::trial_queue::sqlite3::PySQLite3TrialQueue;
-use crate::trial_queue::to_rust::ToRustTrialQueue;
+use crate::trial_queue::into_trial_queue_pyobj;
 
 type SharedStorage = Arc<RwLock<dyn Storage>>;
 type SharedSampler = Arc<dyn Sampler>;
-type SharedTrialQueue = Arc<dyn rustuna_core::trial_queue::TrialQueue>;
 
 mod py_exceptions {
     pyo3::import_exception!(rustuna.exceptions, TrialPruned);
@@ -144,47 +141,6 @@ fn matches_any_exception(py: Python<'_>, err: &PyErr, catch: &[Py<PyAny>]) -> Py
         }
     }
     Ok(false)
-}
-
-fn into_trial_queue_pyobj(
-    py: Python<'_>,
-    trial_queue: Option<Py<PyAny>>,
-) -> PyResult<(SharedTrialQueue, Py<PyAny>)> {
-    match trial_queue {
-        Some(trial_queue) => {
-            let trial_queue_ref = trial_queue.bind(py);
-            if let Ok(py_inmemory_trial_queue) = trial_queue_ref.extract::<PyInMemoryTrialQueue>() {
-                Ok((
-                    py_inmemory_trial_queue.queue.clone() as SharedTrialQueue,
-                    trial_queue.clone_ref(py),
-                ))
-            } else if let Ok(py_sqlite3_trial_queue) =
-                trial_queue_ref.extract::<PySQLite3TrialQueue>()
-            {
-                Ok((
-                    py_sqlite3_trial_queue.queue.clone() as SharedTrialQueue,
-                    trial_queue.clone_ref(py),
-                ))
-            } else if let Ok(py_directory_trial_queue) =
-                trial_queue_ref.extract::<PyDirectoryTrialQueue>()
-            {
-                Ok((
-                    py_directory_trial_queue.queue.clone() as SharedTrialQueue,
-                    trial_queue.clone_ref(py),
-                ))
-            } else {
-                let queue: SharedTrialQueue =
-                    Arc::new(ToRustTrialQueue::new(trial_queue.clone_ref(py)));
-                Ok((queue, trial_queue.clone_ref(py)))
-            }
-        }
-        None => {
-            let trial_queue = PyInMemoryTrialQueue::new();
-            let queue = trial_queue.queue.clone();
-            let py_trial_queue = Py::new(py, trial_queue)?.into_any();
-            Ok((queue, py_trial_queue))
-        }
-    }
 }
 
 fn resolve_storage_pyobj(
