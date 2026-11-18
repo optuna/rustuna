@@ -77,14 +77,9 @@ pub struct PedAnovaImportanceEvaluator {
 
 impl Default for PedAnovaImportanceEvaluator {
     fn default() -> Self {
-        Self {
-            target_quantile: 0.1,
-            region_quantile: 1.0,
-            evaluate_on_local: true,
-            n_steps: 50,
-            prior_weight: 1.0,
-            min_n_trials_in_regime: 2,
-        }
+        PedAnovaBuilder::new()
+            .build()
+            .expect("the default configuration of PedAnovaBuilder is valid")
     }
 }
 
@@ -106,6 +101,7 @@ impl Default for PedAnovaImportanceEvaluator {
 ///     .build()
 ///     .unwrap();
 /// ```
+#[derive(Clone, Debug)]
 pub struct PedAnovaBuilder {
     target_quantile: f64,
     region_quantile: f64,
@@ -161,11 +157,15 @@ impl PedAnovaBuilder {
     }
 
     /// Sets the number of grid steps used by the Parzen estimators.
+    ///
+    /// Must be at least 2.
     pub fn n_steps(self, n_steps: usize) -> Self {
         Self { n_steps, ..self }
     }
 
     /// Sets the prior weight used by the Parzen estimators.
+    ///
+    /// Must be finite and non-negative.
     pub fn prior_weight(self, prior_weight: f64) -> Self {
         Self {
             prior_weight,
@@ -186,7 +186,9 @@ impl PedAnovaBuilder {
     ///
     /// # Errors
     ///
-    /// Returns an error when the configuration is invalid.
+    /// Returns an error when the configuration is invalid, i.e., unless
+    /// `0.0 < target_quantile < region_quantile <= 1.0`, `n_steps >= 2`, and `prior_weight` is
+    /// finite and non-negative.
     pub fn build(self) -> Result<PedAnovaImportanceEvaluator> {
         if !(0.0 < self.target_quantile
             && self.target_quantile < self.region_quantile
@@ -195,6 +197,21 @@ impl PedAnovaBuilder {
             return Err(Error::with_reason(
                 ErrorKind::ImportanceEvaluatorError,
                 "condition 0.0 < `target_quantile` < `region_quantile` <= 1.0 must be satisfied",
+            ));
+        }
+        if self.n_steps < 2 {
+            return Err(Error::with_reason(
+                ErrorKind::ImportanceEvaluatorError,
+                format!("`n_steps` must be at least 2, but got {}", self.n_steps),
+            ));
+        }
+        if !(self.prior_weight.is_finite() && self.prior_weight >= 0.0) {
+            return Err(Error::with_reason(
+                ErrorKind::ImportanceEvaluatorError,
+                format!(
+                    "`prior_weight` must be finite and non-negative, but got {}",
+                    self.prior_weight
+                ),
             ));
         }
         Ok(PedAnovaImportanceEvaluator {
@@ -724,21 +741,41 @@ mod tests {
         let study = test_utils::get_study(42, 20, ObjectiveType::Single, Direction::Minimize)?;
         assert!(!evaluator.evaluate(&study)?.is_empty());
 
-        // The same configuration as `new`, with the internal defaults for the rest.
-        let from_new = PedAnovaImportanceEvaluator::new(0.3, 1.0, true)?;
-        let from_builder = PedAnovaBuilder::new()
-            .target_quantile(0.3)
+        // The builder defaults match the documented defaults of the evaluator.
+        let expected = PedAnovaBuilder::new()
+            .target_quantile(0.1)
             .region_quantile(1.0)
             .evaluate_on_local(true)
+            .n_steps(50)
+            .prior_weight(1.0)
+            .min_n_trials_in_regime(2)
             .build()?;
-        assert_eq!(from_new.evaluate(&study)?, from_builder.evaluate(&study)?);
+        assert_eq!(
+            PedAnovaImportanceEvaluator::default().evaluate(&study)?,
+            expected.evaluate(&study)?
+        );
+        assert_eq!(
+            PedAnovaBuilder::new().build()?.evaluate(&study)?,
+            expected.evaluate(&study)?
+        );
 
         // Invalid configurations are rejected by `build`.
-        assert!(PedAnovaBuilder::new()
-            .target_quantile(0.5)
-            .region_quantile(0.3)
-            .build()
-            .is_err());
+        let invalid = [
+            PedAnovaBuilder::new()
+                .target_quantile(0.5)
+                .region_quantile(0.3),
+            PedAnovaBuilder::new().target_quantile(0.0),
+            PedAnovaBuilder::new().region_quantile(1.5),
+            PedAnovaBuilder::new().n_steps(0),
+            PedAnovaBuilder::new().n_steps(1),
+            PedAnovaBuilder::new().prior_weight(-1.0),
+            PedAnovaBuilder::new().prior_weight(f64::NAN),
+            PedAnovaBuilder::new().prior_weight(f64::INFINITY),
+        ];
+        for builder in invalid {
+            assert!(builder.clone().build().is_err(), "{builder:?}");
+        }
+        assert!(PedAnovaBuilder::new().prior_weight(0.0).build().is_ok());
         Ok(())
     }
 
