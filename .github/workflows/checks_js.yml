@@ -47,7 +47,7 @@ jobs:
             cargo install wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION" --locked --force
           fi
           if ! command -v wasm-opt &> /dev/null; then
-            cargo install wasm-opt
+            cargo install wasm-opt --version 0.116.1 --locked
           fi
       - name: Build JS binding
         working-directory: rustuna_js
