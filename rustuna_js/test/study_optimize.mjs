@@ -1,15 +1,14 @@
-import test from "node:test";
 import assert from "node:assert";
+import test from "node:test";
 
 import * as rustuna from "../pkg/node/rustuna.js";
-import { type } from "node:os";
 
 test("optimize simple quadratic function", () => {
 	const study = rustuna.create_study("test");
 	study.optimize((trial) => {
 		const x = trial.suggest_float("x", -10.0, 10.0);
 		const y = trial.suggest_int("y", -10, 10);
-		const z = trial.suggest_categorical("z", ["foo", "bar"]);
+		trial.suggest_categorical("z", ["foo", "bar"]);
 		const value = (x - 5) ** 2 + (y + 2) ** 2;
 		return value;
 	}, 30);
@@ -20,7 +19,7 @@ test("optimize simple quadratic function", () => {
 test("sample categorical values", () => {
 	const study = rustuna.create_study("test");
 	study.optimize((trial) => {
-		const z = trial.suggest_categorical("z", ["foo", 1, true, false, null]);
+		trial.suggest_categorical("z", ["foo", 1, true, false, null]);
 		// console.log(z);
 		// console.log(typeof z);
 		return 1.0;
