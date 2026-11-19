@@ -30,6 +30,8 @@ jobs:
       - name: Installing biome.js
         working-directory: rustuna_js
         run: npm i -g biome
+      - name: Install TypeScript
+        run: npm i -g typescript@7.0.2
       - name: Lint
         working-directory: rustuna_js
         run: biome ci examples/*.ts test/*.mjs
