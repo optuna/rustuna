@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use rustuna_core::attr::AttrFormat;
 use rustuna_core::storage::Storage;
 use rustuna_storage::cache::CachedStorage;
-use rustuna_storage::sqlite3::{SQLite3Storage, SQLite3StorageOptions};
+use rustuna_storage::sqlite3::SQLite3StorageBuilder;
 
 use crate::distribution::PyDistribution;
 use crate::storage::binding::StorageBinding;
@@ -31,14 +31,13 @@ impl PySQLite3Storage {
     #[new]
     #[pyo3(signature = (file_path, *, create_database = true, apply_discard = false))]
     fn py_new(file_path: &str, create_database: bool, apply_discard: bool) -> PyResult<Self> {
-        let backend = SQLite3Storage::new_with_option(
-            file_path,
-            SQLite3StorageOptions {
-                apply_discard,
-                attr_format: AttrFormat::Json,
-            },
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("Failed to open the SQLite3 file: {e:?}")))?;
+        let backend = SQLite3StorageBuilder::new(file_path)
+            .apply_discard(apply_discard)
+            .attr_format(AttrFormat::Json)
+            .build()
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("Failed to open the SQLite3 file: {e:?}"))
+            })?;
         if create_database {
             backend.create_database().map_err(|e| {
                 PyRuntimeError::new_err(format!("Failed to create the database: {e:?}"))

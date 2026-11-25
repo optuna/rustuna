@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use pyo3::prelude::*;
 
 use rustuna_core::attr::AttrFormat;
-use rustuna_core::storage::{InMemoryStorage, InMemoryStorageOptions, Storage};
+use rustuna_core::storage::{InMemoryStorageBuilder, Storage};
 
 use crate::distribution::PyDistribution;
 use crate::storage::binding::StorageBinding;
@@ -20,18 +20,18 @@ pub struct PyInMemoryStorage {
 impl Default for PyInMemoryStorage {
     /// The default storage of the Python API, which uses Optuna-compatible attributes.
     fn default() -> Self {
-        Self::new(InMemoryStorageOptions {
-            attr_format: AttrFormat::Json,
-            ..InMemoryStorageOptions::default()
-        })
+        Self::new(false)
     }
 }
 
 impl PyInMemoryStorage {
-    pub fn new(option: InMemoryStorageOptions) -> Self {
-        let binding = StorageBinding::new(Arc::new(RwLock::new(InMemoryStorage::new_with_option(
-            option,
-        ))));
+    /// Creates an in-memory storage that uses Optuna-compatible (JSON) attributes.
+    pub fn new(apply_discard: bool) -> Self {
+        let storage = InMemoryStorageBuilder::new()
+            .apply_discard(apply_discard)
+            .attr_format(AttrFormat::Json)
+            .build();
+        let binding = StorageBinding::new(Arc::new(RwLock::new(storage)));
         PyInMemoryStorage { binding }
     }
 
@@ -45,10 +45,7 @@ impl PyInMemoryStorage {
     #[new]
     #[pyo3(signature = (*, apply_discard = false))]
     fn py_new(apply_discard: bool) -> Self {
-        PyInMemoryStorage::new(InMemoryStorageOptions {
-            apply_discard,
-            attr_format: AttrFormat::Json,
-        })
+        PyInMemoryStorage::new(apply_discard)
     }
 
     fn create_new_study(
